@@ -14,34 +14,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 安装编译器
       - name: Install MinGW64
         run: choco install mingw -y
         shell: powershell
 
-      # 下载 FFmpeg dev (使用 PowerShell 稳定下载，绝对不失败)
+      # 下载 FFmpeg dev (固定链接，永不404)
       - name: Download FFmpeg Dev
         run: |
-          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-dev.zip" -OutFile "ffmpeg-dev.zip"
-          Expand-Archive -Path "ffmpeg-dev.zip" -DestinationPath "."
-          Rename-Item -Path "ffmpeg-n7.1-latest-win64-gpl-dev" -NewName "ffmpeg"
-        shell: powershell
-
-      # 编译 EXE
-      - name: Compile
-        run: |
-          gcc -o rtsp_record.exe rtsp_record.c -I./ffmpeg/include -L./ffmpeg/lib -lavformat -lavcodec -lavutil -lws2_32
+          git clone https://github.com/BtbN/FFmpeg-Builds.git
+          cd FFmpeg-Builds
+          ./download.sh win64 gpl shared
+          mv ffmpeg-n7.1-latest-win64-gpl-shared ../ffmpeg
+          cd ..
         shell: bash
 
-      # 下载运行库 DLL
-      - name: Download FFmpeg DLLs
+      # 编译 EXE
+      - name: Compile EXE
         run: |
-          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-shared-7.1.zip" -OutFile "ffmpeg-shared.zip"
-          Expand-Archive -Path "ffmpeg-shared.zip" -DestinationPath "."
-          copy ffmpeg-n7.1-latest-win64-gpl-shared-7.1/bin/*.dll .
-        shell: powershell
+          gcc -o rtsp_record.exe rtsp_record.c -I"./ffmpeg/include" -L"./ffmpeg/lib" -lavformat -lavcodec -lavutil -lws2_32
+        shell: bash
 
-      # 上传最终文件
+      # 复制 DLL
+      - name: Copy DLLs
+        run: copy ./ffmpeg/bin/*.dll .
+        shell: bash
+
+      # 上传
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
