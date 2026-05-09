@@ -35,14 +35,18 @@ void create_day_dir(char* dir) {
     _mkdir(dir);
 }
 
-// 文件名：20260508/20260508181417-61000.mp4
+// ✅ 正确文件名：20260508181417-61000.mp4
 void create_filepath(char* path) {
     char dir[256];
-    create_day_dir(dir);
+    create_day(dir);
     struct _timeb tb;
     _ftime(&tb);
     struct tm* t = localtime(&tb.time);
-    snprintf(path, 512, "%s\\%04d%02d%02d%02d%02d%02d-%03d.mp4",
+
+    // 毫秒扩大 1000 倍 → 输出 5 位数字：61000
+    int micro = tb.millitm * 1000;
+
+    snprintf(path, 512, "%s\\%04d%02d%02d%02d%02d%02d-%05d.mp4",
         dir,
         t->tm_year + 1900,
         t->tm_mon + 1,
@@ -50,7 +54,7 @@ void create_filepath(char* path) {
         t->tm_hour,
         t->tm_min,
         t->tm_sec,
-        tb.millitm);
+        micro);  // ✅ 5 位数字
 }
 
 int start_record(const char* rtsp_url) {
@@ -66,17 +70,15 @@ int start_record(const char* rtsp_url) {
     av_dict_set(&options, "stimeout", "5000000", 0);
 
     ret = avformat_open_input(&ifmt_ctx, rtsp_url, NULL, &options);
-    av_dict_free(options);
+    av_dict_free(&options);
     if (ret < 0) return ret;
 
     avformat_find_stream_info(ifmt_ctx, NULL);
     start_time = av_gettime();
     create_filepath(filepath);
 
-    // 核心：用 matroska 格式（支持所有音频），但后缀是 .mp4
     avformat_alloc_output_context2(&ofmt_ctx, NULL, "matroska", filepath);
 
-    // 复制所有流：视频+音频
     for (i = 0; i < ifmt_ctx->nb_streams; i++) {
         AVStream* in_stream = ifmt_ctx->streams[i];
         AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
@@ -84,7 +86,7 @@ int start_record(const char* rtsp_url) {
     }
 
     ret = avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE);
-    avformat_write_header(ofmt_ctx, NULL);
+    ret = avformat_write_header(ofmt_ctx, NULL);
 
     while (1) {
         ret = av_read_frame(ifmt_ctx, &pkt);
@@ -106,7 +108,8 @@ int start_record(const char* rtsp_url) {
             }
 
             avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE);
-            avformat_write_header(ofmt_ctx, NULL);
+            ret = avformat_write_header(ofmt_ctx, NULL);
+
             start_time = av_gettime();
         }
 
@@ -123,7 +126,7 @@ int start_record(const char* rtsp_url) {
 
 int main() {
     avformat_network_init();
-    av_log_set_level(AV_LOG_ERROR); // 关闭警告，只留错误
+    av_log_set_level(AV_LOG_ERROR);
 
     while (1) {
         char* url = get_new_rtsp_url();
