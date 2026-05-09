@@ -35,16 +35,16 @@ void create_day_dir(char* dir) {
     _mkdir(dir);
 }
 
-// ✅ 正确文件名：20260508181417-61000.mp4
+// 正确文件名：20260508181417-61000.mp4
 void create_filepath(char* path) {
     char dir[256];
-    create_day(dir);
+    create_day_dir(dir); // 这里修复了！
     struct _timeb tb;
     _ftime(&tb);
     struct tm* t = localtime(&tb.time);
 
-    // 毫秒扩大 1000 倍 → 输出 5 位数字：61000
-    int micro = tb.millitm * 1000;
+    // 毫秒 → 5位数字
+    int ms5 = tb.millitm * 1000;
 
     snprintf(path, 512, "%s\\%04d%02d%02d%02d%02d%02d-%05d.mp4",
         dir,
@@ -54,7 +54,7 @@ void create_filepath(char* path) {
         t->tm_hour,
         t->tm_min,
         t->tm_sec,
-        micro);  // ✅ 5 位数字
+        ms5);
 }
 
 int start_record(const char* rtsp_url) {
