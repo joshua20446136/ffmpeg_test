@@ -1,5 +1,4 @@
 name: Build Windows EXE
-
 on:
   push:
     branches: [main]
@@ -14,36 +13,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 安装编译器
       - name: Install MinGW64
         run: choco install mingw -y
-        shell: powershell
 
-      # 下载 FFmpeg dev (固定链接，永不404)
-      - name: Download FFmpeg Dev
+      # 下载 FFmpeg (直接下载成品，绝对稳定)
+      - name: Download FFmpeg
         run: |
-          git clone https://github.com/BtbN/FFmpeg-Builds.git
-          cd FFmpeg-Builds
-          ./download.sh win64 gpl shared
-          mv ffmpeg-n7.1-latest-win64-gpl-shared ../ffmpeg
-          cd ..
+          curl -fL "https://github.com/BtbN/FFmpeg-Builds/releases/download/n7.1/ffmpeg-n7.1-win64-gpl-shared-7.1.zip" -o ffmpeg.zip
+          unzip ffmpeg.zip
+          ren ffmpeg-n7.1-win64-gpl-shared-7.1 ffmpeg
         shell: bash
 
       # 编译 EXE
-      - name: Compile EXE
+      - name: Compile
         run: |
-          gcc -o rtsp_record.exe rtsp_record.c -I"./ffmpeg/include" -L"./ffmpeg/lib" -lavformat -lavcodec -lavutil -lws2_32
-        shell: bash
+          gcc -o rtsp_record.exe rtsp_record.c -I./ffmpeg/include -L./ffmpeg/lib -lavformat -lavcodec -lavutil -lws2_32
 
       # 复制 DLL
       - name: Copy DLLs
-        run: copy ./ffmpeg/bin/*.dll .
-        shell: bash
+        run: copy ffmpeg/bin/*.dll .
 
       # 上传
-      - name: Upload artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: rtsp_record_windows_x64
+          name: rtsp_record_windows
           path: |
             rtsp_record.exe
             *.dll
