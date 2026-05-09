@@ -22,7 +22,7 @@ jobs:
         run: |
           curl -fL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl-shared.zip" -o ffmpeg.zip
           unzip ffmpeg.zip
-          ren ffmpeg-master-latest-win64-lgpl-shared ffmpeg
+          mv ffmpeg-master-latest-win64-lgpl-shared ffmpeg
         shell: bash
 
       # 编译 EXE
