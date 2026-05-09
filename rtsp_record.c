@@ -79,8 +79,12 @@ int start_record(const char* rtsp_url) {
         avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
     }
 
-    avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE);
-    avformat_write_header(ofmt_ctx, NULL);
+    ret = avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE);
+    if (ret < 0) return ret;
+
+    // 处理返回值，消除警告
+    ret = avformat_write_header(ofmt_ctx, NULL);
+    if (ret < 0) return ret;
 
     while (1) {
         ret = av_read_frame(ifmt_ctx, &pkt);
@@ -91,6 +95,7 @@ int start_record(const char* rtsp_url) {
             av_write_trailer(ofmt_ctx);
             avio_closep(&ofmt_ctx->pb);
             avformat_free_context(ofmt_ctx);
+
             create_filepath(filepath);
             avformat_alloc_output_context2(&ofmt_ctx, NULL, "mp4", filepath);
             for (i = 0; i < ifmt_ctx->nb_streams; i++) {
@@ -98,10 +103,13 @@ int start_record(const char* rtsp_url) {
                 AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
                 avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
             }
-            avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE);
-            avformat_write_header(ofmt_ctx, NULL);
+
+            ret = avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE);
+            ret = avformat_write_header(ofmt_ctx, NULL);
+
             start_time = av_gettime();
         }
+
         av_interleaved_write_frame(ofmt_ctx, &pkt);
         av_packet_unref(&pkt);
     }
