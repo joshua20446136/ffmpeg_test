@@ -35,6 +35,7 @@ void create_day_dir(char* dir) {
     _mkdir(dir);
 }
 
+// 文件名：20260508/20260508181417-61000.mp4
 void create_filepath(char* path) {
     char dir[256];
     create_day_dir(dir);
@@ -59,35 +60,28 @@ int start_record(const char* rtsp_url) {
     int64_t start_time = 0;
     double duration = 0;
     char filepath[512];
-    int video_index = -1;
 
     AVDictionary* options = NULL;
     av_dict_set(&options, "rtsp_transport", "tcp", 0);
     av_dict_set(&options, "stimeout", "5000000", 0);
 
     ret = avformat_open_input(&ifmt_ctx, rtsp_url, NULL, &options);
-    av_dict_free(&options);
+    av_dict_free(options);
     if (ret < 0) return ret;
 
     avformat_find_stream_info(ifmt_ctx, NULL);
-
-    // 只找视频流，忽略音频 → 彻底解决音频报错
-    for (i = 0; i < ifmt_ctx->nb_streams; i++) {
-        if (ifmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            video_index = i;
-            break;
-        }
-    }
-    if (video_index < 0) return -1;
-
     start_time = av_gettime();
     create_filepath(filepath);
-    avformat_alloc_output_context2(&ofmt_ctx, NULL, "mp4", filepath);
 
-    // 只拷贝视频流
-    AVStream* in_stream = ifmt_ctx->streams[video_index];
-    AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
-    avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
+    // 核心：用 matroska 格式（支持所有音频），但后缀是 .mp4
+    avformat_alloc_output_context2(&ofmt_ctx, NULL, "matroska", filepath);
+
+    // 复制所有流：视频+音频
+    for (i = 0; i < ifmt_ctx->nb_streams; i++) {
+        AVStream* in_stream = ifmt_ctx->streams[i];
+        AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
+        avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
+    }
 
     ret = avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE);
     avformat_write_header(ofmt_ctx, NULL);
@@ -96,12 +90,6 @@ int start_record(const char* rtsp_url) {
         ret = av_read_frame(ifmt_ctx, &pkt);
         if (ret < 0) break;
 
-        // 只处理视频包
-        if (pkt.stream_index != video_index) {
-            av_packet_unref(&pkt);
-            continue;
-        }
-
         duration = (av_gettime() - start_time) / 1000000.0;
         if (duration >= SEGMENT_DURATION) {
             av_write_trailer(ofmt_ctx);
@@ -109,10 +97,13 @@ int start_record(const char* rtsp_url) {
             avformat_free_context(ofmt_ctx);
 
             create_filepath(filepath);
-            avformat_alloc_output_context2(&ofmt_ctx, NULL, "mp4", filepath);
-            in_stream = ifmt_ctx->streams[video_index];
-            out_stream = avformat_new_stream(ofmt_ctx, NULL);
-            avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
+            avformat_alloc_output_context2(&ofmt_ctx, NULL, "matroska", filepath);
+
+            for (i = 0; i < ifmt_ctx->nb_streams; i++) {
+                AVStream* in_stream = ifmt_ctx->streams[i];
+                AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
+                avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
+            }
 
             avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE);
             avformat_write_header(ofmt_ctx, NULL);
@@ -132,7 +123,7 @@ int start_record(const char* rtsp_url) {
 
 int main() {
     avformat_network_init();
-    av_log_set_level(AV_LOG_ERROR); // 只显示错误，关闭警告
+    av_log_set_level(AV_LOG_ERROR); // 关闭警告，只留错误
 
     while (1) {
         char* url = get_new_rtsp_url();
