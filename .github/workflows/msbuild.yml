@@ -1,0 +1,33 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup FFmpeg
+        uses: AnimMouse/setup-ffmpeg@v1
+        with:
+          ffmpeg-version: release
+          architecture: x64
+          target-platform: windows
+          build-type: shared
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build with GCC
+        run: |
+          gcc rtsp_record.c -o rtsp_record.exe -lavformat -lavcodec -lavutil -lavfilter -lswscale -lws2_32
+        shell: cmd
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: rtsp_record_windows
+          path: rtsp_record.exe
