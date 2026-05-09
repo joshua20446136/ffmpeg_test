@@ -114,13 +114,14 @@ int start_record(const char* rtsp_url) {
 }
 
 int main() {
-    av_register_all();
     avformat_network_init();
+
     while (1) {
         char* url = get_new_rtsp_url();
         start_record(url);
         av_usleep(RECONNECT_DELAY * 1000000);
     }
+
     avformat_network_deinit();
     return 0;
 }
