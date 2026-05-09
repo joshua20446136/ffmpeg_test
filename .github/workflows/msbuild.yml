@@ -5,7 +5,6 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# 强制禁用 Node.js 20 警告
 env:
   ACTIONS_ALLOW_UNSECURE_NODE_VERSION: true
 
@@ -15,11 +14,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up MinGW64
-        uses: egor-tensin/setup-mingw@v2
-        with:
-          platform: x64
+      # 直接用 Chocolatey 安装 MinGW64 —— 最稳定
+      - name: Install MinGW64
+        run: choco install mingw -y
+        shell: powershell
 
+      # 下载 FFmpeg 开发库
       - name: Download FFmpeg Dev
         run: |
           curl -L "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-dev.zip" -o ffmpeg-dev.zip
@@ -27,7 +27,8 @@ jobs:
           mv ffmpeg-n7.1-latest-win64-gpl-dev ffmpeg
         shell: bash
 
-      - name: Compile EXE
+      # 编译 EXE
+      - name: Compile
         run: |
           gcc -o rtsp_record.exe rtsp_record.c \
           -I./ffmpeg/include \
@@ -35,14 +36,16 @@ jobs:
           -lavformat -lavcodec -lavutil -lws2_32
         shell: bash
 
-      - name: Download FFmpeg Shared DLLs
+      # 下载运行所需 DLL
+      - name: Get FFmpeg DLLs
         run: |
-          curl -L "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-shared.zip" -o ffmpeg-shared.zip
+          curl -L "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-shared-7.1.zip" -o ffmpeg-shared.zip
           unzip ffmpeg-shared.zip
-          cp ffmpeg-n7.1-latest-win64-gpl-shared/bin/*.dll .
+          cp ffmpeg-n7.1-latest-win64-gpl-shared-7.1/bin/*.dll .
         shell: bash
 
-      - name: Upload
+      # 上传成品
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: rtsp_record_windows_x64
