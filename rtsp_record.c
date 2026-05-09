@@ -71,7 +71,7 @@ void create_filepath(char* path) {
     struct _timeb tb;
     _ftime(&tb);
     struct tm* t = localtime(&tb.time);
-    int ms5 = tb.millitm * 1000;
+    int ms5 = tb.millitm * 100;
     snprintf(path, 512, "%s\\%04d%02d%02d%02d%02d%02d-%04d.mp4",
         dir,
         t->tm_year + 1900,
