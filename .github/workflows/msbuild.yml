@@ -5,29 +5,46 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # 强制 Node.js 24，消除警告
+
 jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup FFmpeg
-        uses: AnimMouse/setup-ffmpeg@v1
+      
+      # 安装 GCC + 编译工具
+      - name: Set up MinGW64
+        uses: egor-tensin/setup-mingw@v2
         with:
-          ffmpeg-version: release
-          architecture: x64
-          target-platform: windows
-          build-type: shared
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          platform: x64
 
-      - name: Build with GCC
+      # 安装 FFmpeg dev 库
+      - name: Download FFmpeg
         run: |
-          gcc rtsp_record.c -o rtsp_record.exe -lavformat -lavcodec -lavutil -lavfilter -lswscale -lws2_32
-        shell: cmd
+          curl -L https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-shared-7.1.zip -o ffmpeg.zip
+          unzip ffmpeg.zip
+          mv ffmpeg-n7.1-latest-win64-gpl-shared-7.1 ffmpeg
+        shell: bash
 
-      - name: Upload EXE
+      # 编译 exe
+      - name: Build
+        run: |
+          gcc -o rtsp_record.exe rtsp_record.c -I./ffmpeg/include -L./ffmpeg/lib -lavformat -lavcodec -lavutil -lws2_32
+        shell: bash
+
+      # 复制依赖 DLL
+      - name: Copy DLLs
+        run: |
+          cp ffmpeg/bin/*.dll .
+
+      # 上传最终程序
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rtsp_record_windows
-          path: rtsp_record.exe
+          name: rtsp_record_windows_x64
+          path: |
+            rtsp_record.exe
+            *.dll
