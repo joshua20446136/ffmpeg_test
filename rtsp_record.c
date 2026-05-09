@@ -59,6 +59,7 @@ int start_record(const char* rtsp_url) {
     int64_t start_time = 0;
     double duration = 0;
     char filepath[512];
+    int video_index = -1;
 
     AVDictionary* options = NULL;
     av_dict_set(&options, "rtsp_transport", "tcp", 0);
@@ -69,26 +70,37 @@ int start_record(const char* rtsp_url) {
     if (ret < 0) return ret;
 
     avformat_find_stream_info(ifmt_ctx, NULL);
+
+    // 只找视频流，忽略音频 → 彻底解决音频报错
+    for (i = 0; i < ifmt_ctx->nb_streams; i++) {
+        if (ifmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            video_index = i;
+            break;
+        }
+    }
+    if (video_index < 0) return -1;
+
     start_time = av_gettime();
     create_filepath(filepath);
     avformat_alloc_output_context2(&ofmt_ctx, NULL, "mp4", filepath);
 
-    for (i = 0; i < ifmt_ctx->nb_streams; i++) {
-        AVStream* in_stream = ifmt_ctx->streams[i];
-        AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
-        avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
-    }
+    // 只拷贝视频流
+    AVStream* in_stream = ifmt_ctx->streams[video_index];
+    AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
+    avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
 
     ret = avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE);
-    if (ret < 0) return ret;
-
-    // 处理返回值，消除警告
-    ret = avformat_write_header(ofmt_ctx, NULL);
-    if (ret < 0) return ret;
+    avformat_write_header(ofmt_ctx, NULL);
 
     while (1) {
         ret = av_read_frame(ifmt_ctx, &pkt);
         if (ret < 0) break;
+
+        // 只处理视频包
+        if (pkt.stream_index != video_index) {
+            av_packet_unref(&pkt);
+            continue;
+        }
 
         duration = (av_gettime() - start_time) / 1000000.0;
         if (duration >= SEGMENT_DURATION) {
@@ -98,15 +110,12 @@ int start_record(const char* rtsp_url) {
 
             create_filepath(filepath);
             avformat_alloc_output_context2(&ofmt_ctx, NULL, "mp4", filepath);
-            for (i = 0; i < ifmt_ctx->nb_streams; i++) {
-                AVStream* in_stream = ifmt_ctx->streams[i];
-                AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
-                avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
-            }
+            in_stream = ifmt_ctx->streams[video_index];
+            out_stream = avformat_new_stream(ofmt_ctx, NULL);
+            avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
 
-            ret = avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE);
-            ret = avformat_write_header(ofmt_ctx, NULL);
-
+            avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE);
+            avformat_write_header(ofmt_ctx, NULL);
             start_time = av_gettime();
         }
 
@@ -123,6 +132,7 @@ int start_record(const char* rtsp_url) {
 
 int main() {
     avformat_network_init();
+    av_log_set_level(AV_LOG_ERROR); // 只显示错误，关闭警告
 
     while (1) {
         char* url = get_new_rtsp_url();
