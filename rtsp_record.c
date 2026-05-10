@@ -417,6 +417,12 @@ static int transcode_audio_packet(AVFormatContext* ofmt_ctx, AVCodecContext* dec
     if (ret < 0) return ret;
 
     while ((ret = avcodec_receive_frame(dec_ctx, frame)) == 0) {
+        // ===================== 【终极防御】过滤无效音频帧 =====================
+        if (frame->nb_samples <= 0 || !frame->data[0]) {
+            av_frame_unref(frame);
+            continue;
+        }
+
         frame->time_base = dec_ctx->time_base;
 
         ret = transcode_audio_frame(fifo, enc_ctx, swr_ctx, frame, resampled);
