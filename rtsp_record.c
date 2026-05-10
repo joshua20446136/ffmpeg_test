@@ -246,6 +246,7 @@ static int setup_output_stream(AVFormatContext* ofmt_ctx, AVFormatContext* ifmt_
 
 static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx, SwrContext** swr_ctx) {
     const AVCodec* encoder = avcodec_find_encoder(AV_CODEC_ID_AAC);
+    int ret;
     if (!encoder) {
         return AVERROR_ENCODER_NOT_FOUND;
     }
@@ -261,11 +262,18 @@ static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx,
         (*enc_ctx)->ch_layout.nb_channels = dec_ctx->ch_layout.nb_channels;
     }
 
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
     if (encoder->sample_fmts && encoder->sample_fmts[0] != AV_SAMPLE_FMT_NONE) {
         (*enc_ctx)->sample_fmt = encoder->sample_fmts[0];
     } else {
         (*enc_ctx)->sample_fmt = AV_SAMPLE_FMT_FLTP;
     }
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
 
     (*enc_ctx)->time_base = (AVRational){1, (*enc_ctx)->sample_rate};
     (*enc_ctx)->bit_rate = 128000;
