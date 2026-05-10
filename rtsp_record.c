@@ -88,7 +88,13 @@ void create_day_dir(char* dir) {
     char day_name[256];
     strftime(day_name, sizeof(day_name), "%Y%m%d", t);
     snprintf(dir, 256, "%s\\%s", g_base_dir[0] ? g_base_dir : ".", day_name);
-    CreateDirectory(dir, NULL);
+    if (!CreateDirectory(dir, NULL)) {
+        DWORD err = GetLastError();
+        if (err != ERROR_ALREADY_EXISTS) {
+            write_log("CreateDirectory failed for %s: %lu\n", dir, err);
+        }
+    }
+    write_log("Using output directory: %s\n", dir);
 }
 
 static void av_log_error_str(int err, char* buf, size_t buf_size) {
@@ -102,8 +108,8 @@ void create_filepath(char* path) {
     struct _timeb tb;
     _ftime(&tb);
     struct tm* t = localtime(&tb.time);
-    int ms5 = tb.millitm * 1000;
-    snprintf(path, 512, "%s\\%04d%02d%02d%02d%02d%02d-%05d.mp4",
+    int ms = tb.millitm;
+    snprintf(path, 512, "%s\\%04d%02d%02d%02d%02d%02d-%3d00.mp4",
         dir,
         t->tm_year + 1900,
         t->tm_mon + 1,
@@ -111,7 +117,8 @@ void create_filepath(char* path) {
         t->tm_hour,
         t->tm_min,
         t->tm_sec,
-        ms5);
+        ms);
+    write_log("Created output filepath: %s\n", path);
 }
 
 void setup_output_stream(AVFormatContext* ofmt_ctx, AVFormatContext* ifmt_ctx) {
