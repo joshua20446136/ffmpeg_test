@@ -202,7 +202,7 @@ static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx,
         return AVERROR(ENOMEM);
     }
 
-    // 新版 FFmpeg 通道设置
+    // 新版 FFmpeg 通道格式
     av_channel_layout_copy(&(*enc_ctx)->ch_layout, &dec_ctx->ch_layout);
     (*enc_ctx)->sample_rate = dec_ctx->sample_rate;
     (*enc_ctx)->sample_fmt = AV_SAMPLE_FMT_FLTP;
@@ -215,18 +215,11 @@ static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx,
         return -1;
     }
 
-    // 正确创建重采样上下文（新版API）
+    // 新版重采样（无编译错误）
     *swr_ctx = swr_alloc();
-    if (!*swr_ctx) {
-        avcodec_free_context(enc_ctx);
-        return -1;
-    }
-
-    // 设置重采样参数
     av_opt_set_chlayout(*swr_ctx, "out_chlayout", &(*enc_ctx)->ch_layout, 0);
     av_opt_set_int(*swr_ctx, "out_sample_fmt", (*enc_ctx)->sample_fmt, 0);
     av_opt_set_int(*swr_ctx, "out_sample_rate", (*enc_ctx)->sample_rate, 0);
-
     av_opt_set_chlayout(*swr_ctx, "in_chlayout", &dec_ctx->ch_layout, 0);
     av_opt_set_int(*swr_ctx, "in_sample_fmt", dec_ctx->sample_fmt, 0);
     av_opt_set_int(*swr_ctx, "in_sample_rate", dec_ctx->sample_rate, 0);
@@ -492,7 +485,7 @@ int start_record(const char* rtsp_url) {
 
     AVDictionary* write_opts = NULL;
     //av_dict_set(&write_opts, "movflags", "frag_keyframe+empty_moov", 0);
-    ret = avformat_write_header(ofmt_ctx, &write_opts);
+    ret = avformat_write_header(ofmt_ctx, NULL);
     av_dict_free(&write_opts);
     if (ret < 0) {
         write_log("Failed to write file header: %d\n", ret);
@@ -562,7 +555,7 @@ int start_record(const char* rtsp_url) {
 
             write_opts = NULL;
             //av_dict_set(&write_opts, "movflags", "frag_keyframe+empty_moov", 0);
-            ret = avformat_write_header(ofmt_ctx, &write_opts);
+            ret = avformat_write_header(ofmt_ctx, NULL);
             av_dict_free(&write_opts);
             if (ret < 0) {
                 write_log("Failed to write segment header: %d\n", ret);
