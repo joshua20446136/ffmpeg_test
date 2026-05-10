@@ -158,8 +158,82 @@ static void free_audio_transcoding(AVCodecContext** audio_dec_ctx, AVCodecContex
     }
 }
 
+static int setup_output_stream(AVFormatContext* ofmt_ctx, AVFormatContext* ifmt_ctx,
+    AVCodecContext** audio_dec_ctx, AVCodecContext** audio_enc_ctx,
+    SwrContext** swr_ctx, int* stream_mapping) {
+
+    for (unsigned int i = 0; i < ifmt_ctx->nb_streams; i++) {
+        AVStream* in_stream = ifmt_ctx->streams[i];
+        AVCodecParameters* in_codecpar = in_stream->codecpar;
+        stream_mapping[i] = -1;
+
+        if (in_codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            if (!audio_dec_ctx[i]) {
+                AVCodec* decoder = avcodec_find_decoder(in_codecpar->codec_id);
+                if (!decoder) {
+                    free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, ifmt_ctx->nb_streams);
+                    return AVERROR_DECODER_NOT_FOUND;
+                }
+
+                audio_dec_ctx[i] = avcodec_alloc_context3(decoder);
+                if (!audio_dec_ctx[i]) {
+                    free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, ifmt_ctx->nb_streams);
+                    return AVERROR(ENOMEM);
+                }
+
+                if (avcodec_parameters_to_context(audio_dec_ctx[i], in_codecpar) < 0) {
+                    free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, ifmt_ctx->nb_streams);
+                    return AVERROR_INVALIDDATA;
+                }
+
+                audio_dec_ctx[i]->time_base = in_stream->time_base;
+                if (avcodec_open2(audio_dec_ctx[i], decoder, NULL) < 0) {
+                    free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, ifmt_ctx->nb_streams);
+                    return AVERROR_INVALIDDATA;
+                }
+            }
+
+            if (!audio_enc_ctx[i]) {
+                int ret = open_audio_encoder(audio_dec_ctx[i], &audio_enc_ctx[i], &swr_ctx[i]);
+                if (ret < 0) {
+                    free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, ifmt_ctx->nb_streams);
+                    return ret;
+                }
+            }
+
+            AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
+            if (!out_stream) {
+                free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, ifmt_ctx->nb_streams);
+                return AVERROR_UNKNOWN;
+            }
+            out_stream->time_base = audio_enc_ctx[i]->time_base;
+            if (avcodec_parameters_from_context(out_stream->codecpar, audio_enc_ctx[i]) < 0) {
+                free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, ifmt_ctx->nb_streams);
+                return AVERROR_UNKNOWN;
+            }
+            out_stream->codecpar->codec_tag = 0;
+            stream_mapping[i] = out_stream->index;
+        } else {
+            AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
+            if (!out_stream) {
+                free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, ifmt_ctx->nb_streams);
+                return AVERROR_UNKNOWN;
+            }
+            if (avcodec_parameters_copy(out_stream->codecpar, in_codecpar) < 0) {
+                free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, ifmt_ctx->nb_streams);
+                return AVERROR_UNKNOWN;
+            }
+            out_stream->codecpar->codec_tag = 0;
+            out_stream->time_base = in_stream->time_base;
+            stream_mapping[i] = out_stream->index;
+        }
+    }
+
+    return 0;
+}
+
 static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx, SwrContext** swr_ctx) {
-    AVCodec* encoder = avcodec_find_encoder(AV_CODEC_ID_AAC);
+    const AVCodec* encoder = avcodec_find_encoder(AV_CODEC_ID_AAC);
     if (!encoder) {
         return AVERROR_ENCODER_NOT_FOUND;
     }
@@ -170,11 +244,10 @@ static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx,
     }
 
     (*enc_ctx)->sample_rate = dec_ctx->sample_rate;
-    (*enc_ctx)->channel_layout = dec_ctx->channel_layout;
-    if (!(*enc_ctx)->channel_layout) {
-        (*enc_ctx)->channel_layout = av_get_default_channel_layout(dec_ctx->channels);
+    av_channel_layout_copy(&(*enc_ctx)->ch_layout, &dec_ctx->ch_layout);
+    if ((*enc_ctx)->ch_layout.nb_channels == 0) {
+        av_channel_layout_default(&(*enc_ctx)->ch_layout, dec_ctx->ch_layout.nb_channels);
     }
-    (*enc_ctx)->channels = av_get_channel_layout_nb_channels((*enc_ctx)->channel_layout);
     (*enc_ctx)->sample_fmt = encoder->sample_fmts ? encoder->sample_fmts[0] : AV_SAMPLE_FMT_FLTP;
     (*enc_ctx)->time_base = (AVRational){1, (*enc_ctx)->sample_rate};
     (*enc_ctx)->bit_rate = 128000;
@@ -185,19 +258,18 @@ static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx,
         return ret;
     }
 
-    *swr_ctx = swr_alloc_set_opts(NULL,
-        (*enc_ctx)->channel_layout,
-        (*enc_ctx)->sample_fmt,
-        (*enc_ctx)->sample_rate,
-        dec_ctx->channel_layout,
-        dec_ctx->sample_fmt,
-        dec_ctx->sample_rate,
-        0,
-        NULL);
+    *swr_ctx = swr_alloc();
     if (!*swr_ctx) {
         avcodec_free_context(enc_ctx);
         return AVERROR(ENOMEM);
     }
+
+    av_opt_set_chlayout(*swr_ctx, "in_chlayout", &dec_ctx->ch_layout, 0);
+    av_opt_set_int(*swr_ctx, "in_sample_rate", dec_ctx->sample_rate, 0);
+    av_opt_set_sample_fmt(*swr_ctx, "in_sample_fmt", dec_ctx->sample_fmt, 0);
+    av_opt_set_chlayout(*swr_ctx, "out_chlayout", &(*enc_ctx)->ch_layout, 0);
+    av_opt_set_int(*swr_ctx, "out_sample_rate", (*enc_ctx)->sample_rate, 0);
+    av_opt_set_sample_fmt(*swr_ctx, "out_sample_fmt", (*enc_ctx)->sample_fmt, 0);
 
     ret = swr_init(*swr_ctx);
     if (ret < 0) {
@@ -235,7 +307,7 @@ static int transcode_audio_frame(AVFormatContext* ofmt_ctx, AVFrame* frame, AVCo
         return AVERROR(ENOMEM);
     }
 
-    resampled->channel_layout = enc_ctx->channel_layout;
+    av_channel_layout_copy(&resampled->ch_layout, &enc_ctx->ch_layout);
     resampled->sample_rate = enc_ctx->sample_rate;
     resampled->format = enc_ctx->sample_fmt;
     resampled->nb_samples = av_rescale_rnd(swr_get_delay(swr_ctx, frame->sample_rate) + frame->nb_samples,
