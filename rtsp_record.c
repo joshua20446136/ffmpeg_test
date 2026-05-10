@@ -513,7 +513,7 @@ int start_record(const char* rtsp_url) {
     }
 
     AVDictionary* write_opts = NULL;
-    av_dict_set(&write_opts, "movflags", "frag_keyframe+empty_moov", 0);
+    //av_dict_set(&write_opts, "movflags", "frag_keyframe+empty_moov", 0);
     ret = avformat_write_header(ofmt_ctx, &write_opts);
     av_dict_free(&write_opts);
     if (ret < 0) {
