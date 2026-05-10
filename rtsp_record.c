@@ -21,6 +21,10 @@
 #define SERVICE_DISPLAY_NAME "RTSP Recorder Service"
 #define SERVICE_DESC_TEXT "RTSP Camera Recorder Service"
 
+char g_base_dir[MAX_PATH] = {0};
+char g_log_file[MAX_PATH] = {0};
+char g_python_script[MAX_PATH] = {0};
+
 FILE* log_fp = NULL;
 SERVICE_STATUS g_ServiceStatus;
 SERVICE_STATUS_HANDLE g_ServiceStatusHandle;
@@ -30,7 +34,8 @@ void write_log(const char* fmt, ...) {
     va_start(ap, fmt);
     time_t now = time(NULL);
     struct tm* t = localtime(&now);
-    log_fp = fopen(LOG_FILE, "a+");
+    const char* log_path = g_log_file[0] ? g_log_file : LOG_FILE;
+    log_fp = fopen(log_path, "a+");
     if (!log_fp) return;
     fprintf(log_fp, "[%04d-%02d-%02d %02d:%02d:%02d] ",
         t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
@@ -41,10 +46,27 @@ void write_log(const char* fmt, ...) {
     va_end(ap);
 }
 
+void init_service_paths() {
+    char module_path[MAX_PATH] = {0};
+    if (GetModuleFileName(NULL, module_path, MAX_PATH)) {
+        char* p = strrchr(module_path, '\\');
+        if (p) {
+            *p = '\0';
+        }
+        strncpy(g_base_dir, module_path, MAX_PATH - 1);
+    } else {
+        strncpy(g_base_dir, ".", MAX_PATH - 1);
+    }
+
+    snprintf(g_log_file, sizeof(g_log_file), "%s\\%s", g_base_dir, LOG_FILE);
+    snprintf(g_python_script, sizeof(g_python_script), "%s\\%s", g_base_dir, PYTHON_SCRIPT);
+}
+
 char* get_new_rtsp_url() {
     static char rtsp_url[1024] = {0};
     char cmd[1024];
-    snprintf(cmd, sizeof(cmd), "python %s", PYTHON_SCRIPT);
+    const char* python_path = g_python_script[0] ? g_python_script : PYTHON_SCRIPT;
+    snprintf(cmd, sizeof(cmd), "python \"%s\"", python_path);
     FILE* fp = _popen(cmd, "r");
     if (!fp) {
         write_log("Failed to call Python script\n");
@@ -63,7 +85,9 @@ char* get_new_rtsp_url() {
 void create_day_dir(char* dir) {
     time_t now = time(NULL);
     struct tm* t = localtime(&now);
-    strftime(dir, 256, "%Y%m%d", t);
+    char day_name[256];
+    strftime(day_name, sizeof(day_name), "%Y%m%d", t);
+    snprintf(dir, 256, "%s\\%s", g_base_dir[0] ? g_base_dir : ".", day_name);
     CreateDirectory(dir, NULL);
 }
 
@@ -262,6 +286,7 @@ int InstallService();
 int UninstallService();
 
 int main(int argc, char* argv[]) {
+    init_service_paths();
     if (argc > 1) {
         if (!strcmp(argv[1], "install")) {
             int result = InstallService();
@@ -291,7 +316,16 @@ int main(int argc, char* argv[]) {
         {SERVICE_NAME, ServiceMain},
         {NULL, NULL}
     };
-    StartServiceCtrlDispatcher(svcTable);
+
+    if (!StartServiceCtrlDispatcher(svcTable)) {
+        DWORD err = GetLastError();
+        write_log("StartServiceCtrlDispatcher failed: %lu\n", err);
+        if (err == ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) {
+            write_log("Not running under service control manager; starting in console mode\n");
+            main_record();
+        }
+    }
+
     return 0;
 }
 
@@ -338,6 +372,9 @@ int InstallService() {
 
     write_log("Service executable path: %s\n", path);
 
+    char quoted_path[MAX_PATH * 2] = {0};
+    snprintf(quoted_path, sizeof(quoted_path), "\"%s\"", path);
+
     SC_HANDLE hSvc = CreateService(
         hSCM,
         SERVICE_NAME,
@@ -346,7 +383,7 @@ int InstallService() {
         SERVICE_WIN32_OWN_PROCESS,
         SERVICE_AUTO_START,
         SERVICE_ERROR_NORMAL,
-        path,
+        quoted_path,
         NULL, NULL, NULL, NULL, NULL
     );
 
