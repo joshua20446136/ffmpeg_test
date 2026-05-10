@@ -89,6 +89,7 @@ char* get_new_rtsp_url() {
     static char rtsp_url[1024] = {0};
     char cmd[1024];
     const char* python_path = g_python_script[0] ? g_python_script : PYTHON_SCRIPT;
+    write_log("Calling Python script Path: %s\n", python_path);
     snprintf(cmd, sizeof(cmd), "python \"%s\"", python_path);
     FILE* fp = _popen(cmd, "r");
     if (!fp) {
