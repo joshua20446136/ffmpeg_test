@@ -203,28 +203,25 @@ static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx,
         return AVERROR(ENOMEM);
     }
 
-    // 强制 AAC 最兼容参数，支持所有输入
-    (*enc_ctx)->channels = dec_ctx->channels;
-    (*enc_ctx)->channel_layout = av_get_default_channel_layout(dec_ctx->channels);
+    // 新版 FFmpeg 正确写法
+    av_channel_layout_copy(&(*enc_ctx)->ch_layout, &dec_ctx->ch_layout);
     (*enc_ctx)->sample_rate = dec_ctx->sample_rate;
     (*enc_ctx)->sample_fmt = AV_SAMPLE_FMT_FLTP;
     (*enc_ctx)->bit_rate = 64000;
     (*enc_ctx)->time_base = (AVRational){1, dec_ctx->sample_rate};
-
-    // 关键：AAC 固定 1024 采样，不允许自定义
-    (*enc_ctx)->frame_size = 1024;
+    (*enc_ctx)->frame_size = 1024; // AAC 固定
 
     if (avcodec_open2(*enc_ctx, encoder, NULL) < 0) {
         avcodec_free_context(enc_ctx);
         return -1;
     }
 
-    // 重采样
-    *swr_ctx = swr_alloc_set_opts(NULL,
-        (*enc_ctx)->channel_layout,
+    // 新版 swr_alloc_set_opts2
+    *swr_ctx = swr_alloc_set_opts2(NULL,
+        &(*enc_ctx)->ch_layout,
         (*enc_ctx)->sample_fmt,
         (*enc_ctx)->sample_rate,
-        dec_ctx->channel_layout,
+        &dec_ctx->ch_layout,
         dec_ctx->sample_fmt,
         dec_ctx->sample_rate,
         0, NULL);
@@ -236,7 +233,6 @@ static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx,
     }
 
     return 0;
-
 }
 
 static int write_encoded_audio_packet(AVFormatContext* ofmt_ctx, AVPacket* pkt,
@@ -303,9 +299,7 @@ static int encode_audio_from_fifo(AVFormatContext* ofmt_ctx, AVAudioFifo* fifo,
 }
 
 static int flush_audio_fifo(AVFormatContext* ofmt_ctx, AVAudioFifo* fifo,
-    AVCodecContext* enc_ctx, AVStream* out_stream, AVPacket* pkt, int64_t* audio_pts)
-{
-    // AAC 不支持碎片，直接清空
+    AVCodecContext* enc_ctx, AVStream* out_stream, AVPacket* pkt, int64_t* audio_pts) {
     av_audio_fifo_reset(fifo);
     return 0;
 }
@@ -317,9 +311,9 @@ static int transcode_audio_frame(AVAudioFifo* fifo, AVCodecContext* enc_ctx,
     av_frame_unref(resampled);
 
     resampled->format = enc_ctx->sample_fmt;
-    resampled->channel_layout = enc_ctx->channel_layout;
+    av_channel_layout_copy(&resampled->ch_layout, &enc_ctx->ch_layout);
     resampled->sample_rate = enc_ctx->sample_rate;
-    resampled->nb_samples = av_rescale_rnd(frame->nb_samples, enc_ctx->sample_rate, frame->sample_rate, AV_ROUND_UP);
+    resampled->nb_samples = 1024;
 
     if (av_frame_get_buffer(resampled, 0) < 0)
         return -1;
@@ -329,7 +323,7 @@ static int transcode_audio_frame(AVAudioFifo* fifo, AVCodecContext* enc_ctx,
     if (ret < 0)
         return ret;
 
-    // 写入 FIFO
+    // 写入FIFO
     if (av_audio_fifo_write(fifo, (void**)resampled->data, resampled->nb_samples) < 0)
         return -1;
 
