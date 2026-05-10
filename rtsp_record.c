@@ -176,7 +176,7 @@ int start_record(const char* rtsp_url) {
 
     if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
         write_log("Opening output file: %s\n", filepath);
-        ret = avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE | AVIO_FLAG_CREATE);
+        ret = avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE);
         if (ret < 0) {
             char errbuf[128] = {0};
             av_log_error_str(ret, errbuf, sizeof(errbuf));
@@ -228,7 +228,7 @@ int start_record(const char* rtsp_url) {
 
             if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
                 write_log("Opening segment file: %s\n", filepath);
-                ret = avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE | AVIO_FLAG_CREATE);
+                ret = avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE);
                 if (ret < 0) {
                     char errbuf[128] = {0};
                     av_log_error_str(ret, errbuf, sizeof(errbuf));
