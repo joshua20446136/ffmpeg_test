@@ -91,6 +91,11 @@ void create_day_dir(char* dir) {
     CreateDirectory(dir, NULL);
 }
 
+static void av_log_error_str(int err, char* buf, size_t buf_size) {
+    if (!buf || buf_size == 0) return;
+    av_strerror(err, buf, buf_size);
+}
+
 void create_filepath(char* path) {
     char dir[256];
     create_day_dir(dir);
@@ -170,9 +175,12 @@ int start_record(const char* rtsp_url) {
     setup_output_stream(ofmt_ctx, ifmt_ctx);
 
     if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
-        ret = avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE);
+        write_log("Opening output file: %s\n", filepath);
+        ret = avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE | AVIO_FLAG_CREATE);
         if (ret < 0) {
-            write_log("Failed to open output file: %d\n", ret);
+            char errbuf[128] = {0};
+            av_log_error_str(ret, errbuf, sizeof(errbuf));
+            write_log("Failed to open output file: %d (%s)\n", ret, errbuf);
             avformat_free_context(ofmt_ctx);
             avformat_close_input(&ifmt_ctx);
             av_packet_free(&pkt);
@@ -219,9 +227,12 @@ int start_record(const char* rtsp_url) {
             setup_output_stream(ofmt_ctx, ifmt_ctx);
 
             if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
-                ret = avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE);
+                write_log("Opening segment file: %s\n", filepath);
+                ret = avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE | AVIO_FLAG_CREATE);
                 if (ret < 0) {
-                    write_log("Failed to open segment file: %d\n", ret);
+                    char errbuf[128] = {0};
+                    av_log_error_str(ret, errbuf, sizeof(errbuf));
+                    write_log("Failed to open segment file: %d (%s)\n", ret, errbuf);
                     avformat_free_context(ofmt_ctx);
                     break;
                 }
