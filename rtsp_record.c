@@ -43,7 +43,7 @@ void write_log(const char* fmt, ...) {
     const char* log_path = g_log_file[0] ? g_log_file : LOG_FILE;
     log_fp = fopen(log_path, "a+");
     if (!log_fp) return;
-    fprintf(log_fp, "[%04d-%02d-%02d %02d:%02d:%02d] ",
+    fprintf(log_fp, "[%04d-%02d-%02d %02d-%02d-%02d] ",
         t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
         t->tm_hour, t->tm_min, t->tm_sec);
     vfprintf(log_fp, fmt, ap);
@@ -174,29 +174,29 @@ static int setup_output_stream(AVFormatContext* ofmt_ctx, AVFormatContext* ifmt_
         stream_mapping[i] = -1;
 
         AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
-        if (!out_stream) return AVERROR_UNKNOWN;
+        if (!out_stream) return -1;
 
         if (in_codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             if (avcodec_parameters_copy(out_stream->codecpar, in_codecpar) < 0)
-                return AVERROR_UNKNOWN;
+                return -1;
             out_stream->time_base = in_stream->time_base;
             stream_mapping[i] = out_stream->index;
         }
         else if (in_codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
             const AVCodec* dec_codec = avcodec_find_decoder(in_codecpar->codec_id);
-            if (!dec_codec) return AVERROR_UNKNOWN;
+            if (!dec_codec) return -1;
 
             audio_dec_ctx[i] = avcodec_alloc_context3(dec_codec);
             avcodec_parameters_to_context(audio_dec_ctx[i], in_codecpar);
             if (avcodec_open2(audio_dec_ctx[i], dec_codec, NULL) < 0)
-                return AVERROR_UNKNOWN;
+                return -1;
 
             if (open_audio_encoder(audio_dec_ctx[i], &audio_enc_ctx[i], &swr_ctx[i]) < 0)
-                return AVERROR_UNKNOWN;
+                return -1;
 
             audio_fifo[i] = av_audio_fifo_alloc(audio_enc_ctx[i]->sample_fmt,
                 audio_enc_ctx[i]->ch_layout.nb_channels, 4096);
-            if (!audio_fifo[i]) return AVERROR_ENOMEM;
+            if (!audio_fifo[i]) return -1;
 
             avcodec_parameters_from_context(out_stream->codecpar, audio_enc_ctx[i]);
             out_stream->time_base = audio_enc_ctx[i]->time_base;
@@ -209,10 +209,10 @@ static int setup_output_stream(AVFormatContext* ofmt_ctx, AVFormatContext* ifmt_
 static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx, SwrContext** swr_ctx)
 {
     const AVCodec* encoder = avcodec_find_encoder(AV_CODEC_ID_AAC);
-    if (!encoder) return AVERROR_ENCODER_NOT_FOUND;
+    if (!encoder) return -1;
 
     *enc_ctx = avcodec_alloc_context3(encoder);
-    if (!*enc_ctx) return AVERROR_ENOMEM;
+    if (!*enc_ctx) return -1;
 
     av_channel_layout_copy(&(*enc_ctx)->ch_layout, &dec_ctx->ch_layout);
     (*enc_ctx)->sample_rate = dec_ctx->sample_rate;
@@ -263,7 +263,7 @@ static int encode_audio_from_fifo(AVFormatContext* ofmt_ctx, AVAudioFifo* fifo,
 
     while (av_audio_fifo_size(fifo) >= frame_size) {
         AVFrame* output_frame = av_frame_alloc();
-        if (!output_frame) return AVERROR_ENOMEM;
+        if (!output_frame) return -1;
 
         av_channel_layout_copy(&output_frame->ch_layout, &enc_ctx->ch_layout);
         output_frame->sample_rate = enc_ctx->sample_rate;
@@ -467,7 +467,8 @@ int start_record(const char* rtsp_url) {
             if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
                 avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
             }
-            avformat_write_header(ofmt_ctx, NULL);
+            ret = avformat_write_header(ofmt_ctx, NULL);
+            if (ret < 0) break;
             start_time = av_gettime();
         }
 
