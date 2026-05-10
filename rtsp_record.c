@@ -258,16 +258,13 @@ static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx,
     (*enc_ctx)->sample_rate = dec_ctx->sample_rate;
     av_channel_layout_copy(&(*enc_ctx)->ch_layout, &dec_ctx->ch_layout);
     if ((*enc_ctx)->ch_layout.nb_channels == 0) {
-        av_channel_layout_default(&(*enc_ctx)->ch_layout, dec_ctx->ch_layout.nb_channels);
+        (*enc_ctx)->ch_layout.nb_channels = dec_ctx->ch_layout.nb_channels;
     }
 
-    // Use new API to get supported sample formats
-    const enum AVSampleFormat* sample_fmts = NULL;
-    int ret = avcodec_get_supported_config(*enc_ctx, encoder, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0, (const void**)&sample_fmts, NULL);
-    if (ret >= 0 && sample_fmts) {
-        (*enc_ctx)->sample_fmt = sample_fmts[0];
+    if (encoder->sample_fmts && encoder->sample_fmts[0] != AV_SAMPLE_FMT_NONE) {
+        (*enc_ctx)->sample_fmt = encoder->sample_fmts[0];
     } else {
-        (*enc_ctx)->sample_fmt = AV_SAMPLE_FMT_FLTP; // fallback
+        (*enc_ctx)->sample_fmt = AV_SAMPLE_FMT_FLTP;
     }
 
     (*enc_ctx)->time_base = (AVRational){1, (*enc_ctx)->sample_rate};
