@@ -206,14 +206,7 @@ static int setup_output_stream(AVFormatContext* ofmt_ctx, AVFormatContext* ifmt_
                     return ret;
                 }
                 audio_fifo[i] = av_audio_fifo_alloc(audio_enc_ctx[i]->sample_fmt,
-                    av_get_channel_layout_nb_channels(&audio_enc_ctx[i]->ch_layout), 1);
-                if (!audio_fifo[i]) {
-                    free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
-                    return AVERROR(ENOMEM);
-                }
-            }
-
-            AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
+                        audio_enc_ctx[i]->ch_layout.nb_channels, 1);
             if (!out_stream) {
                 free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
                 return AVERROR_UNKNOWN;
