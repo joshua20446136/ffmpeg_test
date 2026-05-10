@@ -166,43 +166,54 @@ static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx,
 
 static int setup_output_stream(AVFormatContext* ofmt_ctx, AVFormatContext* ifmt_ctx,
     AVCodecContext** audio_dec_ctx, AVCodecContext** audio_enc_ctx,
-    SwrContext** swr_ctx, AVAudioFifo** audio_fifo, int* stream_mapping) {
-
+    SwrContext** swr_ctx, AVAudioFifo** audio_fifo, int* stream_mapping)
+{
     for (unsigned int i = 0; i < ifmt_ctx->nb_streams; i++) {
         AVStream* in_stream = ifmt_ctx->streams[i];
         AVCodecParameters* in_codecpar = in_stream->codecpar;
         stream_mapping[i] = -1;
 
-        // ===================== 🔥 终极修复：直接复制所有流，不转码！=====================
         AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
-        if (!out_stream) {
-            return AVERROR_UNKNOWN;
-        }
+        if (!out_stream) return AVERROR_UNKNOWN;
 
-        // 直接复制编码器参数，不做任何音频转码！
-        if (avcodec_parameters_copy(out_stream->codecpar, in_codecpar) < 0) {
-            return AVERROR_UNKNOWN;
+        if (in_codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            if (avcodec_parameters_copy(out_stream->codecpar, in_codecpar) < 0)
+                return AVERROR_UNKNOWN;
+            out_stream->time_base = in_stream->time_base;
+            stream_mapping[i] = out_stream->index;
         }
-        out_stream->time_base = in_stream->time_base;
-        stream_mapping[i] = out_stream->index;
+        else if (in_codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            const AVCodec* dec_codec = avcodec_find_decoder(in_codecpar->codec_id);
+            if (!dec_codec) return AVERROR_UNKNOWN;
+
+            audio_dec_ctx[i] = avcodec_alloc_context3(dec_codec);
+            avcodec_parameters_to_context(audio_dec_ctx[i], in_codecpar);
+            if (avcodec_open2(audio_dec_ctx[i], dec_codec, NULL) < 0)
+                return AVERROR_UNKNOWN;
+
+            if (open_audio_encoder(audio_dec_ctx[i], &audio_enc_ctx[i], &swr_ctx[i]) < 0)
+                return AVERROR_UNKNOWN;
+
+            audio_fifo[i] = av_audio_fifo_alloc(audio_enc_ctx[i]->sample_fmt,
+                audio_enc_ctx[i]->ch_layout.nb_channels, 4096);
+            if (!audio_fifo[i]) return AVERROR_ENOMEM;
+
+            avcodec_parameters_from_context(out_stream->codecpar, audio_enc_ctx[i]);
+            out_stream->time_base = audio_enc_ctx[i]->time_base;
+            stream_mapping[i] = out_stream->index;
+        }
     }
-
     return 0;
 }
 
 static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx, SwrContext** swr_ctx)
 {
     const AVCodec* encoder = avcodec_find_encoder(AV_CODEC_ID_AAC);
-    if (!encoder) {
-        return AVERROR_ENCODER_NOT_FOUND;
-    }
+    if (!encoder) return AVERROR_ENCODER_NOT_FOUND;
 
     *enc_ctx = avcodec_alloc_context3(encoder);
-    if (!*enc_ctx) {
-        return AVERROR(ENOMEM);
-    }
+    if (!*enc_ctx) return AVERROR_ENOMEM;
 
-    // 新版 FFmpeg 通道格式
     av_channel_layout_copy(&(*enc_ctx)->ch_layout, &dec_ctx->ch_layout);
     (*enc_ctx)->sample_rate = dec_ctx->sample_rate;
     (*enc_ctx)->sample_fmt = AV_SAMPLE_FMT_FLTP;
@@ -215,7 +226,6 @@ static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx,
         return -1;
     }
 
-    // 新版重采样（无编译错误）
     *swr_ctx = swr_alloc();
     av_opt_set_chlayout(*swr_ctx, "out_chlayout", &(*enc_ctx)->ch_layout, 0);
     av_opt_set_int(*swr_ctx, "out_sample_fmt", (*enc_ctx)->sample_fmt, 0);
@@ -229,7 +239,6 @@ static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx,
         avcodec_free_context(enc_ctx);
         return -1;
     }
-
     return 0;
 }
 
@@ -241,15 +250,10 @@ static int write_encoded_audio_packet(AVFormatContext* ofmt_ctx, AVPacket* pkt,
         pkt->stream_index = out_stream->index;
         ret = av_interleaved_write_frame(ofmt_ctx, pkt);
         av_packet_unref(pkt);
-        if (ret < 0) {
-            return ret;
-        }
+        if (ret < 0) return ret;
     }
     av_packet_unref(pkt);
-    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-        return 0;
-    }
-    return ret;
+    return (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) ? 0 : ret;
 }
 
 static int encode_audio_from_fifo(AVFormatContext* ofmt_ctx, AVAudioFifo* fifo,
@@ -259,17 +263,16 @@ static int encode_audio_from_fifo(AVFormatContext* ofmt_ctx, AVAudioFifo* fifo,
 
     while (av_audio_fifo_size(fifo) >= frame_size) {
         AVFrame* output_frame = av_frame_alloc();
-        if (!output_frame) return AVERROR(ENOMEM);
+        if (!output_frame) return AVERROR_ENOMEM;
 
         av_channel_layout_copy(&output_frame->ch_layout, &enc_ctx->ch_layout);
         output_frame->sample_rate = enc_ctx->sample_rate;
         output_frame->format = enc_ctx->sample_fmt;
         output_frame->nb_samples = frame_size;
 
-        ret = av_frame_get_buffer(output_frame, 0);
-        if (ret < 0) {
+        if (av_frame_get_buffer(output_frame, 0) < 0) {
             av_frame_free(&output_frame);
-            return ret;
+            return -1;
         }
 
         ret = av_audio_fifo_read(fifo, (void**)output_frame->data, frame_size);
@@ -278,17 +281,12 @@ static int encode_audio_from_fifo(AVFormatContext* ofmt_ctx, AVAudioFifo* fifo,
             return ret;
         }
 
-        // 正确 PTS
         output_frame->pts = *audio_pts;
         *audio_pts += frame_size;
 
-        // 发送帧
         ret = avcodec_send_frame(enc_ctx, output_frame);
-        if (ret < 0) {
-            av_frame_free(&output_frame);
-            return ret;
-        }
         av_frame_free(&output_frame);
+        if (ret < 0) return ret;
 
         ret = write_encoded_audio_packet(ofmt_ctx, pkt, enc_ctx, out_stream);
         if (ret < 0) return ret;
@@ -317,12 +315,10 @@ static int transcode_audio_frame(AVAudioFifo* fifo, AVCodecContext* enc_ctx,
         return -1;
 
     ret = swr_convert_frame(swr_ctx, resampled, frame);
-    if (ret < 0)
-        return ret;
+    if (ret < 0) return ret;
 
     if (av_audio_fifo_write(fifo, (void**)resampled->data, resampled->nb_samples) < 0)
         return -1;
-
     return 0;
 }
 
@@ -334,45 +330,31 @@ static int transcode_audio_packet(AVFormatContext* ofmt_ctx, AVCodecContext* dec
     if (ret < 0) return ret;
 
     while ((ret = avcodec_receive_frame(dec_ctx, frame)) == 0) {
-        // ===================== 【终极防御】过滤无效音频帧 =====================
         if (frame->nb_samples <= 0 || !frame->data[0]) {
             av_frame_unref(frame);
             continue;
         }
-
-        frame->time_base = dec_ctx->time_base;
-
         ret = transcode_audio_frame(fifo, enc_ctx, swr_ctx, frame, resampled);
-        if (ret < 0) {
-            av_frame_unref(frame);
-            return ret;
-        }
+        if (ret < 0) { av_frame_unref(frame); return ret; }
 
         ret = encode_audio_from_fifo(ofmt_ctx, fifo, enc_ctx, out_stream, enc_pkt, audio_pts);
-        if (ret < 0) {
-            av_frame_unref(frame);
-            return ret;
-        }
-
+        if (ret < 0) { av_frame_unref(frame); return ret; }
         av_frame_unref(frame);
     }
-
-    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) return 0;
-    return ret;
+    return (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) ? 0 : ret;
 }
 
 static int flush_audio_encoder(AVFormatContext* ofmt_ctx, AVCodecContext* enc_ctx,
     AVPacket* pkt, AVStream* out_stream) {
     int ret = avcodec_send_frame(enc_ctx, NULL);
     if (ret < 0) return ret;
-
     return write_encoded_audio_packet(ofmt_ctx, pkt, enc_ctx, out_stream);
 }
 
 int start_record(const char* rtsp_url) {
     AVFormatContext *ifmt_ctx = NULL, *ofmt_ctx = NULL;
     AVPacket* pkt = av_packet_alloc();
-    int ret, i;
+    int ret;
     int64_t start_time = 0;
     double duration = 0;
     char filepath[512];
@@ -409,22 +391,12 @@ int start_record(const char* rtsp_url) {
 
     if (!audio_frame || !resampled_frame || !enc_pkt) {
         write_log("Audio buffer allocation failed\n");
-        av_frame_free(&audio_frame);
-        av_frame_free(&resampled_frame);
-        av_packet_free(&enc_pkt);
-        avformat_close_input(&ifmt_ctx);
-        av_packet_free(&pkt);
-        return AVERROR(ENOMEM);
+        goto cleanup;
     }
 
     if (avformat_find_stream_info(ifmt_ctx, NULL) < 0) {
         write_log("Failed to find stream info\n");
-        av_frame_free(&audio_frame);
-        av_frame_free(&resampled_frame);
-        av_packet_free(&enc_pkt);
-        avformat_close_input(&ifmt_ctx);
-        av_packet_free(&pkt);
-        return -1;
+        goto cleanup;
     }
 
     start_time = av_gettime();
@@ -433,83 +405,47 @@ int start_record(const char* rtsp_url) {
     char utf8_filepath[1024] = {0};
     if (win_path_to_utf8(filepath, utf8_filepath, sizeof(utf8_filepath)) < 0) {
         write_log("Failed to convert output filepath to UTF-8\n");
-        av_frame_free(&audio_frame);
-        av_frame_free(&resampled_frame);
-        av_packet_free(&enc_pkt);
-        avformat_close_input(&ifmt_ctx);
-        av_packet_free(&pkt);
-        return -1;
+        goto cleanup;
     }
 
     avformat_alloc_output_context2(&ofmt_ctx, NULL, "mp4", utf8_filepath);
     if (!ofmt_ctx) {
         write_log("Failed to create output context\n");
-        av_frame_free(&audio_frame);
-        av_frame_free(&resampled_frame);
-        av_packet_free(&enc_pkt);
-        avformat_close_input(&ifmt_ctx);
-        av_packet_free(&pkt);
-        return -1;
+        goto cleanup;
     }
 
     ret = setup_output_stream(ofmt_ctx, ifmt_ctx, audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, stream_mapping);
     if (ret < 0) {
         write_log("Failed to setup output streams: %d\n", ret);
-        avformat_free_context(ofmt_ctx);
-        av_frame_free(&audio_frame);
-        av_frame_free(&resampled_frame);
-        av_packet_free(&enc_pkt);
-        free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
-        avformat_close_input(&ifmt_ctx);
-        av_packet_free(&pkt);
-        return ret;
+        goto cleanup;
     }
 
     if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
-        write_log("Opening output file: %s\n", filepath);
         ret = avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
         if (ret < 0) {
-            char errbuf[128] = {0};
+            char errbuf[128];
             av_log_error_str(ret, errbuf, sizeof(errbuf));
-            write_log("Failed to open output file: %d (%s)\n", ret, errbuf);
-            avformat_free_context(ofmt_ctx);
-            av_frame_free(&audio_frame);
-            av_frame_free(&resampled_frame);
-            av_packet_free(&enc_pkt);
-            free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
-            avformat_close_input(&ifmt_ctx);
-            av_packet_free(&pkt);
-            return ret;
+            write_log("Failed to open output file: %s\n", errbuf);
+            goto cleanup;
         }
     }
 
-    AVDictionary* write_opts = NULL;
-    //av_dict_set(&write_opts, "movflags", "frag_keyframe+empty_moov", 0);
     ret = avformat_write_header(ofmt_ctx, NULL);
-    av_dict_free(&write_opts);
     if (ret < 0) {
         write_log("Failed to write file header: %d\n", ret);
-        avio_closep(&ofmt_ctx->pb);
-        avformat_free_context(ofmt_ctx);
-        av_frame_free(&audio_frame);
-        av_frame_free(&resampled_frame);
-        av_packet_free(&enc_pkt);
-        free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
-        avformat_close_input(&ifmt_ctx);
-        av_packet_free(&pkt);
-        return ret;
+        goto cleanup;
     }
 
     while (1) {
         ret = av_read_frame(ifmt_ctx, pkt);
         if (ret < 0) {
-            write_log("Failed to read frame or connection interrupted: %d\n", ret);
+            write_log("Connection lost: %d\n", ret);
             break;
         }
 
         duration = (av_gettime() - start_time) / 1000000.0;
         if (duration >= SEGMENT_DURATION) {
-            write_log("Segment created: %s (%.1f seconds)\n", filepath, duration);
+            write_log("Segment finished\n");
             for (unsigned int idx = 0; idx < ifmt_ctx->nb_streams; idx++) {
                 if (audio_enc_ctx[idx] && stream_mapping[idx] >= 0) {
                     flush_audio_fifo(ofmt_ctx, audio_fifo[idx], audio_enc_ctx[idx], ofmt_ctx->streams[stream_mapping[idx]], enc_pkt, &audio_pts[idx]);
@@ -517,93 +453,51 @@ int start_record(const char* rtsp_url) {
                     audio_pts[idx] = 0;
                 }
             }
-            avio_flush(ofmt_ctx->pb);
             av_write_trailer(ofmt_ctx);
             avio_closep(&ofmt_ctx->pb);
             avformat_free_context(ofmt_ctx);
 
             create_filepath(filepath);
-            char new_utf8_filepath[1024] = {0};
-            if (win_path_to_utf8(filepath, new_utf8_filepath, sizeof(new_utf8_filepath)) < 0) {
-                write_log("Failed to convert segment filepath to UTF-8\n");
-                break;
-            }
-            avformat_alloc_output_context2(&ofmt_ctx, NULL, "mp4", new_utf8_filepath);
-            if (!ofmt_ctx) {
-                write_log("Failed to create segment output context\n");
-                break;
-            }
+            if (win_path_to_utf8(filepath, utf8_filepath, sizeof(utf8_filepath)) < 0) break;
+            avformat_alloc_output_context2(&ofmt_ctx, NULL, "mp4", utf8_filepath);
+            if (!ofmt_ctx) break;
 
             ret = setup_output_stream(ofmt_ctx, ifmt_ctx, audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, stream_mapping);
-            if (ret < 0) {
-                write_log("Failed to setup segment streams: %d\n", ret);
-                avformat_free_context(ofmt_ctx);
-                break;
-            }
-
+            if (ret < 0) break;
             if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
-                write_log("Opening segment file: %s\n", filepath);
-                ret = avio_open(&ofmt_ctx->pb, new_utf8_filepath, AVIO_FLAG_WRITE);
-                if (ret < 0) {
-                    char errbuf[128] = {0};
-                    av_log_error_str(ret, errbuf, sizeof(errbuf));
-                    write_log("Failed to open segment file: %d (%s)\n", ret, errbuf);
-                    avformat_free_context(ofmt_ctx);
-                    break;
-                }
+                avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
             }
-
-            write_opts = NULL;
-            //av_dict_set(&write_opts, "movflags", "frag_keyframe+empty_moov", 0);
-            ret = avformat_write_header(ofmt_ctx, NULL);
-            av_dict_free(&write_opts);
-            if (ret < 0) {
-                write_log("Failed to write segment header: %d\n", ret);
-                avio_closep(&ofmt_ctx->pb);
-                avformat_free_context(ofmt_ctx);
-                break;
-            }
+            avformat_write_header(ofmt_ctx, NULL);
             start_time = av_gettime();
         }
 
-        int in_index = pkt->stream_index;
-        if (in_index < 0 || in_index >= MAX_STREAMS) {
+        int in_idx = pkt->stream_index;
+        if (in_idx < 0 || in_idx >= MAX_STREAMS) {
+            av_packet_unref(pkt);
+            continue;
+        }
+        int out_idx = stream_mapping[in_idx];
+        if (out_idx < 0) {
             av_packet_unref(pkt);
             continue;
         }
 
-        int out_index = stream_mapping[in_index];
-        if (out_index < 0) {
-            av_packet_unref(pkt);
-            continue;
-        }
+        AVStream* in_st = ifmt_ctx->streams[in_idx];
+        AVStream* out_st = ofmt_ctx->streams[out_idx];
 
-        AVStream* in_stream = ifmt_ctx->streams[in_index];
-        AVStream* out_stream = ofmt_ctx->streams[out_index];
-
-        // 音频直接转发，不转码！永远不报错
-        av_packet_rescale_ts(pkt, in_stream->time_base, out_stream->time_base);
-        pkt->stream_index = out_index;
-        ret = av_interleaved_write_frame(ofmt_ctx, pkt);
-        av_packet_unref(pkt);
-        continue;
-
-        pkt->pts = av_rescale_q_rnd(pkt->pts, in_stream->time_base, out_stream->time_base,
-            AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX);
-        pkt->dts = av_rescale_q_rnd(pkt->dts, in_stream->time_base, out_stream->time_base,
-            AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX);
-        pkt->duration = av_rescale_q(pkt->duration, in_stream->time_base, out_stream->time_base);
-        pkt->stream_index = out_index;
-
-        ret = av_interleaved_write_frame(ofmt_ctx, pkt);
-        if (ret < 0) {
-            write_log("Failed to write frame: %d\n", ret);
-            av_packet_unref(pkt);
-            break;
+        if (in_st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            av_packet_rescale_ts(pkt, in_st->time_base, out_st->time_base);
+            pkt->stream_index = out_idx;
+            av_interleaved_write_frame(ofmt_ctx, pkt);
+        } else {
+            transcode_audio_packet(ofmt_ctx, audio_dec_ctx[in_idx], audio_enc_ctx[in_idx],
+                swr_ctx[in_idx], audio_fifo[in_idx], pkt, audio_frame, resampled_frame,
+                enc_pkt, out_st, &audio_pts[in_idx]);
         }
         av_packet_unref(pkt);
     }
 
+cleanup:
     for (unsigned int idx = 0; idx < ifmt_ctx->nb_streams; idx++) {
         if (audio_enc_ctx[idx] && stream_mapping[idx] >= 0) {
             flush_audio_fifo(ofmt_ctx, audio_fifo[idx], audio_enc_ctx[idx], ofmt_ctx->streams[stream_mapping[idx]], enc_pkt, &audio_pts[idx]);
@@ -612,11 +506,8 @@ int start_record(const char* rtsp_url) {
     }
 
     if (ofmt_ctx) {
-        avio_flush(ofmt_ctx->pb);
         av_write_trailer(ofmt_ctx);
-        if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
-            avio_closep(&ofmt_ctx->pb);
-        }
+        avio_closep(&ofmt_ctx->pb);
         avformat_free_context(ofmt_ctx);
     }
 
@@ -624,20 +515,16 @@ int start_record(const char* rtsp_url) {
     av_frame_free(&audio_frame);
     av_frame_free(&resampled_frame);
     av_packet_free(&enc_pkt);
-
-    if (ifmt_ctx) {
-        avformat_close_input(&ifmt_ctx);
-    }
-
+    avformat_close_input(&ifmt_ctx);
     av_packet_free(&pkt);
-    write_log("Recording stopped\n");
+    write_log("Recording loop ended\n");
     return 0;
 }
 
 void main_record() {
     avformat_network_init();
     av_log_set_level(AV_LOG_ERROR);
-    write_log("Service started successfully\n");
+    write_log("Service started\n");
 
     while (1) {
         char* url = get_new_rtsp_url();
@@ -656,28 +543,8 @@ int UninstallService();
 int main(int argc, char* argv[]) {
     init_service_paths();
     if (argc > 1) {
-        if (!strcmp(argv[1], "install")) {
-            int result = InstallService();
-            if (result == 0) {
-                MessageBox(NULL, "Service installed successfully!\nRun: net start RTSPRecorder\nOr start it in Services Manager", "Success", MB_OK);
-            } else {
-                char msg[256];
-                snprintf(msg, sizeof(msg), "Service installation failed! Error code: %d\nPlease run as administrator", result);
-                MessageBox(NULL, msg, "Failed", MB_ICONERROR);
-            }
-            return result;
-        }
-        if (!strcmp(argv[1], "uninstall")) {
-            int result = UninstallService();
-            if (result == 0) {
-                MessageBox(NULL, "Service uninstalled successfully!", "Success", MB_OK);
-            } else {
-                char msg[256];
-                snprintf(msg, sizeof(msg), "Service uninstallation failed! Error code: %d", result);
-                MessageBox(NULL, msg, "Failed", MB_ICONERROR);
-            }
-            return result;
-        }
+        if (!strcmp(argv[1], "install")) return InstallService();
+        if (!strcmp(argv[1], "uninstall")) return UninstallService();
     }
 
     SERVICE_TABLE_ENTRY svcTable[] = {
@@ -686,123 +553,65 @@ int main(int argc, char* argv[]) {
     };
 
     if (!StartServiceCtrlDispatcher(svcTable)) {
-        DWORD err = GetLastError();
-        write_log("StartServiceCtrlDispatcher failed: %lu\n", err);
-        if (err == ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) {
-            write_log("Not running under service control manager; starting in console mode\n");
-            main_record();
-        }
+        main_record();
     }
-
     return 0;
 }
 
 void WINAPI ServiceMain(DWORD argc, LPSTR* argv) {
     g_ServiceStatusHandle = RegisterServiceCtrlHandler(SERVICE_NAME, ServiceCtrlHandler);
-
     g_ServiceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-    g_ServiceStatus.dwCurrentState = SERVICE_START_PENDING;
+    g_ServiceStatus.dwCurrentState = SERVICE_RUNNING;
     g_ServiceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
     SetServiceStatus(g_ServiceStatusHandle, &g_ServiceStatus);
-
-    g_ServiceStatus.dwCurrentState = SERVICE_RUNNING;
-    SetServiceStatus(g_ServiceStatusHandle, &g_ServiceStatus);
-
     main_record();
 }
 
 void ServiceCtrlHandler(DWORD ctrlCode) {
-    switch (ctrlCode) {
-        case SERVICE_CONTROL_STOP:
-        case SERVICE_CONTROL_SHUTDOWN:
-            g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
-            SetServiceStatus(g_ServiceStatusHandle, &g_ServiceStatus);
-            ExitProcess(0);
-            break;
-        default:
-            break;
+    if (ctrlCode == SERVICE_CONTROL_STOP || ctrlCode == SERVICE_CONTROL_SHUTDOWN) {
+        g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+        SetServiceStatus(g_ServiceStatusHandle, &g_ServiceStatus);
+        ExitProcess(0);
     }
 }
 
 int InstallService() {
     SC_HANDLE hSCM = OpenSCManager(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
-    if (!hSCM) {
-        write_log("OpenSCManager failed: %ld\n", GetLastError());
-        return GetLastError();
-    }
+    if (!hSCM) return GetLastError();
 
-    char path[1024];
-    if (!GetModuleFileName(NULL, path, sizeof(path))) {
-        write_log("GetModuleFileName failed\n");
-        CloseServiceHandle(hSCM);
-        return GetLastError();
-    }
-
-    write_log("Service executable path: %s\n", path);
-
-    char quoted_path[MAX_PATH * 2] = {0};
-    snprintf(quoted_path, sizeof(quoted_path), "\"%s\"", path);
+    char path[MAX_PATH];
+    GetModuleFileName(NULL, path, MAX_PATH);
+    char quoted[MAX_PATH * 2];
+    snprintf(quoted, sizeof(quoted), "\"%s\"", path);
 
     SC_HANDLE hSvc = CreateService(
-        hSCM,
-        SERVICE_NAME,
-        SERVICE_DISPLAY_NAME,
-        SERVICE_ALL_ACCESS,
-        SERVICE_WIN32_OWN_PROCESS,
-        SERVICE_AUTO_START,
-        SERVICE_ERROR_NORMAL,
-        quoted_path,
-        NULL, NULL, NULL, NULL, NULL
-    );
+        hSCM, SERVICE_NAME, SERVICE_DISPLAY_NAME, SERVICE_ALL_ACCESS,
+        SERVICE_WIN32_OWN_PROCESS, SERVICE_AUTO_START, SERVICE_ERROR_NORMAL,
+        quoted, NULL, NULL, NULL, NULL, NULL);
 
-    if (!hSvc) {
-        DWORD error = GetLastError();
-        write_log("CreateService failed: %ld\n", error);
-        CloseServiceHandle(hSCM);
-        return error;
+    if (hSvc) {
+        SERVICE_DESCRIPTION sd = {SERVICE_DESC_TEXT};
+        ChangeServiceConfig2(hSvc, SERVICE_CONFIG_DESCRIPTION, &sd);
+        CloseServiceHandle(hSvc);
     }
-
-    // 设置服务描述
-    SERVICE_DESCRIPTION sd;
-    sd.lpDescription = SERVICE_DESC_TEXT;
-    ChangeServiceConfig2(hSvc, SERVICE_CONFIG_DESCRIPTION, &sd);
-
-    write_log("Service %s installed successfully\n", SERVICE_NAME);
-    CloseServiceHandle(hSvc);
+    DWORD err = GetLastError();
     CloseServiceHandle(hSCM);
-    return 0;
+    return err == 0 ? 0 : err;
 }
 
 int UninstallService() {
     SC_HANDLE hSCM = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
-    if (!hSCM) {
-        write_log("OpenSCManager failed: %ld\n", GetLastError());
-        return GetLastError();
-    }
+    if (!hSCM) return GetLastError();
 
     SC_HANDLE hSvc = OpenService(hSCM, SERVICE_NAME, SERVICE_ALL_ACCESS);
-    if (!hSvc) {
-        DWORD error = GetLastError();
-        write_log("OpenService failed: %ld (service may not exist)\n", error);
-        CloseServiceHandle(hSCM);
-        return error;
-    }
-
-    // 先停止服务
-    SERVICE_STATUS status;
-    ControlService(hSvc, SERVICE_CONTROL_STOP, &status);
-    Sleep(1000);
-
-    if (!DeleteService(hSvc)) {
-        DWORD error = GetLastError();
-        write_log("DeleteService failed: %ld\n", error);
+    if (hSvc) {
+        SERVICE_STATUS st;
+        ControlService(hSvc, SERVICE_CONTROL_STOP, &st);
+        Sleep(1000);
+        DeleteService(hSvc);
         CloseServiceHandle(hSvc);
-        CloseServiceHandle(hSCM);
-        return error;
     }
-
-    write_log("Service %s uninstalled successfully\n", SERVICE_NAME);
-    CloseServiceHandle(hSvc);
+    DWORD err = GetLastError();
     CloseServiceHandle(hSCM);
-    return 0;
+    return err == 0 ? 0 : err;
 }
