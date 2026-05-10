@@ -6,13 +6,11 @@
 #include <direct.h>
 #include <windows.h>
 #include <winsvc.h>
-#include <process.h>
+#include <stdarg.h>
 
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
 #include <libavutil/time.h>
-#include <libavutil/imgutils.h>
-#include <libavcodec/avcodec.h>
 
 #define SEGMENT_DURATION 60.0
 #define RECONNECT_DELAY 3000000
@@ -21,15 +19,13 @@
 
 #define SERVICE_NAME "RTSPRecorder"
 #define SERVICE_DISPLAY_NAME "RTSP Recorder Service"
-#define SERVICE_DESC  "RTSP Camera Recorder with Auto Split and Python URL Refresh"
+#define SERVICE_DESCRIPTION "RTSP Camera Recorder Service"
 
 FILE* log_fp = NULL;
-SERVICE_STATUS serviceStatus;
-SERVICE_STATUS_HANDLE serviceStatusHandle;
-HANDLE g_hStopEvent = NULL;
+SERVICE_STATUS g_ServiceStatus;
+SERVICE_STATUS_HANDLE g_ServiceStatusHandle;
 
-void write_log(const char* fmt, ...)
-{
+void write_log(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     time_t now = time(NULL);
@@ -45,290 +41,305 @@ void write_log(const char* fmt, ...)
     va_end(ap);
 }
 
-void print_av_error(const char* func, int ret)
-{
-    char err_buf[AV_ERROR_MAX_STRING_SIZE] = {0};
-    av_strerror(ret, err_buf, sizeof(err_buf));
-    write_log("%s error: %d (%s)\n", func, ret, err_buf);
-}
-
-char* get_new_rtsp_url()
-{
+char* get_new_rtsp_url() {
     static char rtsp_url[1024] = {0};
     char cmd[1024];
     snprintf(cmd, sizeof(cmd), "python %s", PYTHON_SCRIPT);
     FILE* fp = _popen(cmd, "r");
-    if (!fp)
-    {
-        write_log("Python script popen failed\n");
+    if (!fp) {
+        write_log("Python 脚本调用失败\n");
         return rtsp_url;
     }
-    fgets(rtsp_url, 1024, fp);
-    size_t len = strlen(rtsp_url);
-    while (len > 0 && (rtsp_url[len-1] == '\n' || rtsp_url[len-1] == '\r'))
-    {
-        rtsp_url[len-1] = 0;
-        len--;
+    if (fgets(rtsp_url, sizeof(rtsp_url), fp)) {
+        size_t len = strlen(rtsp_url);
+        if (len > 0 && (rtsp_url[len-1] == '\n' || rtsp_url[len-1] == '\r'))
+            rtsp_url[len-1] = 0;
     }
     _pclose(fp);
-    write_log("Get RTSP URL: %s\n", rtsp_url);
+    write_log("获取RTSP: %s\n", rtsp_url);
     return rtsp_url;
 }
 
-void create_day_dir(char* dir)
-{
+void create_day_dir(char* dir) {
     time_t now = time(NULL);
     struct tm* t = localtime(&now);
     strftime(dir, 256, "%Y%m%d", t);
-    CreateDirectoryA(dir, NULL);
+    CreateDirectory(dir, NULL);
 }
 
-void create_filepath(char* path)
-{
+void create_filepath(char* path) {
     char dir[256];
     create_day_dir(dir);
     struct _timeb tb;
     _ftime(&tb);
     struct tm* t = localtime(&tb.time);
-    snprintf(path, 512, "%s\\%04d%02d%02d_%02d%02d%02d.mp4",
+    int ms5 = tb.millitm * 1000;
+    snprintf(path, 512, "%s\\%04d%02d%02d%02d%02d%02d-%05d.mp4",
         dir,
         t->tm_year + 1900,
         t->tm_mon + 1,
         t->tm_mday,
         t->tm_hour,
         t->tm_min,
-        t->tm_sec);
+        t->tm_sec,
+        ms5);
 }
 
-static int init_output_context(AVFormatContext** ofmt_ctx, AVFormatContext* ifmt_ctx, const char* filepath)
-{
-    int ret, i;
-    *ofmt_ctx = NULL;
-    ret = avformat_alloc_output_context2(ofmt_ctx, NULL, "mp4", filepath);
-    if (ret < 0 || !*ofmt_ctx)
-    {
-        print_av_error("avformat_alloc_output_context2", ret);
-        return ret;
-    }
-
-    for (i = 0; i < ifmt_ctx->nb_streams; i++)
-    {
+void setup_output_stream(AVFormatContext* ofmt_ctx, AVFormatContext* ifmt_ctx) {
+    for (unsigned int i = 0; i < ifmt_ctx->nb_streams; i++) {
         AVStream* in_stream = ifmt_ctx->streams[i];
-        AVStream* out_stream = avformat_new_stream(*ofmt_ctx, NULL);
-        if (!out_stream) return AVERROR_UNKNOWN;
-
-        ret = avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
-        if (ret < 0) { print_av_error("avcodec_parameters_copy", ret); return ret; }
+        AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
+        avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
+        out_stream->codecpar->codec_tag = 0;
         out_stream->time_base = in_stream->time_base;
+        out_stream->r_frame_rate = in_stream->r_frame_rate;
         out_stream->avg_frame_rate = in_stream->avg_frame_rate;
     }
-
-    ret = avio_open(&(*ofmt_ctx)->pb, filepath, AVIO_FLAG_WRITE);
-    if (ret < 0) { print_av_error("avio_open", ret); return ret; }
-
-    ret = avformat_write_header(*ofmt_ctx, NULL);
-    if (ret < 0) { print_av_error("avformat_write_header", ret); return ret; }
-
-    write_log("New file: %s\n", filepath);
-    return 0;
 }
 
-int start_record(const char* rtsp_url)
-{
+int start_record(const char* rtsp_url) {
     AVFormatContext *ifmt_ctx = NULL, *ofmt_ctx = NULL;
-    AVPacket pkt;
+    AVPacket* pkt = av_packet_alloc();
     int ret, i;
     int64_t start_time = 0;
     double duration = 0;
     char filepath[512];
 
-    write_log("Start recording: %s\n", rtsp_url);
+    if (!pkt) {
+        write_log("内存分配失败\n");
+        return -1;
+    }
+
+    write_log("开始录制: %s\n", rtsp_url);
 
     AVDictionary* options = NULL;
     av_dict_set(&options, "rtsp_transport", "tcp", 0);
-    av_dict_set(&options, "stimeout", "5000000", 0);
-    av_dict_set(&options, "max_delay", "500000", 0);
+    av_dict_set(&options, "stimeout", "10000000", 0);
+    av_dict_set(&options, "max_delay", "5000000", 0);
 
     ret = avformat_open_input(&ifmt_ctx, rtsp_url, NULL, &options);
     av_dict_free(&options);
-    if (ret < 0) { print_av_error("avformat_open_input", ret); return ret; }
+    if (ret < 0) {
+        write_log("打开RTSP失败: %d\n", ret);
+        av_packet_free(&pkt);
+        return ret;
+    }
 
-    ret = avformat_find_stream_info(ifmt_ctx, NULL);
-    if (ret < 0) { print_av_error("avformat_find_stream_info", ret); avformat_close_input(&ifmt_ctx); return ret; }
-
-    for (i = 0; i < ifmt_ctx->nb_streams; i++)
-    {
-        AVStream* s = ifmt_ctx->streams[i];
-        write_log("Stream %d: type=%s, codec=%s\n",
-            i, av_get_media_type_string(s->codecpar->codec_type), avcodec_get_name(s->codecpar->codec_id));
+    if (avformat_find_stream_info(ifmt_ctx, NULL) < 0) {
+        write_log("查找流信息失败\n");
+        avformat_close_input(&ifmt_ctx);
+        av_packet_free(&pkt);
+        return -1;
     }
 
     start_time = av_gettime();
     create_filepath(filepath);
-    ret = init_output_context(&ofmt_ctx, ifmt_ctx, filepath);
-    if (ret < 0) { avformat_close_input(&ifmt_ctx); return ret; }
 
-    while (1)
-    {
-        if (WaitForSingleObject(g_hStopEvent, 0) == WAIT_OBJECT_0) break;
+    avformat_alloc_output_context2(&ofmt_ctx, NULL, "mp4", filepath);
+    if (!ofmt_ctx) {
+        write_log("创建输出上下文失败\n");
+        avformat_close_input(&ifmt_ctx);
+        av_packet_free(&pkt);
+        return -1;
+    }
 
-        ret = av_read_frame(ifmt_ctx, &pkt);
-        if (ret < 0) { print_av_error("av_read_frame", ret); break; }
+    setup_output_stream(ofmt_ctx, ifmt_ctx);
 
-        AVStream* in_stream = ifmt_ctx->streams[pkt.stream_index];
-        AVStream* out_stream = ofmt_ctx->streams[pkt.stream_index];
+    if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
+        ret = avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE);
+        if (ret < 0) {
+            write_log("打开输出文件失败: %d\n", ret);
+            avformat_free_context(ofmt_ctx);
+            avformat_close_input(&ifmt_ctx);
+            av_packet_free(&pkt);
+            return ret;
+        }
+    }
 
-        pkt.pts = av_rescale_q_rnd(pkt.pts, in_stream->time_base, out_stream->time_base, AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX);
-        pkt.dts = av_rescale_q_rnd(pkt.dts, in_stream->time_base, out_stream->time_base, AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX);
-        pkt.duration = av_rescale_q(pkt.duration, in_stream->time_base, out_stream->time_base);
-        pkt.pos = -1;
+    AVDictionary* write_opts = NULL;
+    av_dict_set(&write_opts, "movflags", "frag_keyframe+empty_moov", 0);
+    ret = avformat_write_header(ofmt_ctx, &write_opts);
+    av_dict_free(&write_opts);
+    if (ret < 0) {
+        write_log("写文件头失败: %d\n", ret);
+        avio_closep(&ofmt_ctx->pb);
+        avformat_free_context(ofmt_ctx);
+        avformat_close_input(&ifmt_ctx);
+        av_packet_free(&pkt);
+        return ret;
+    }
+
+    while (1) {
+        ret = av_read_frame(ifmt_ctx, pkt);
+        if (ret < 0) {
+            write_log("读取帧失败或连接中断: %d\n", ret);
+            break;
+        }
 
         duration = (av_gettime() - start_time) / 1000000.0;
-        if (duration >= SEGMENT_DURATION)
-        {
-            write_log("Split segment, duration: %.1fs\n", duration);
+        if (duration >= SEGMENT_DURATION) {
+            write_log("分段: %s (%.1f秒)\n", filepath, duration);
+            
+            avio_flush(ofmt_ctx->pb);
             av_write_trailer(ofmt_ctx);
             avio_closep(&ofmt_ctx->pb);
             avformat_free_context(ofmt_ctx);
 
             create_filepath(filepath);
-            ret = init_output_context(&ofmt_ctx, ifmt_ctx, filepath);
-            if (ret < 0) { av_packet_unref(&pkt); break; }
+            avformat_alloc_output_context2(&ofmt_ctx, NULL, "mp4", filepath);
+            if (!ofmt_ctx) {
+                write_log("创建分段输出上下文失败\n");
+                break;
+            }
+
+            setup_output_stream(ofmt_ctx, ifmt_ctx);
+
+            if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
+                ret = avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE);
+                if (ret < 0) {
+                    write_log("打开分段文件失败: %d\n", ret);
+                    avformat_free_context(ofmt_ctx);
+                    break;
+                }
+            }
+
+            write_opts = NULL;
+            av_dict_set(&write_opts, "movflags", "frag_keyframe+empty_moov", 0);
+            ret = avformat_write_header(ofmt_ctx, &write_opts);
+            av_dict_free(&write_opts);
+            if (ret < 0) {
+                write_log("写分段文件头失败: %d\n", ret);
+                avio_closep(&ofmt_ctx->pb);
+                avformat_free_context(ofmt_ctx);
+                break;
+            }
             start_time = av_gettime();
         }
 
-        ret = av_interleaved_write_frame(ofmt_ctx, &pkt);
-        if (ret < 0) print_av_error("av_interleaved_write_frame", ret);
-
-        av_packet_unref(&pkt);
+        pkt->stream_index = pkt->stream_index;
+        ret = av_interleaved_write_frame(ofmt_ctx, pkt);
+        if (ret < 0) {
+            write_log("写帧失败: %d\n", ret);
+        }
+        av_packet_unref(pkt);
     }
 
-    if (ofmt_ctx)
-    {
+    if (ofmt_ctx) {
+        avio_flush(ofmt_ctx->pb);
         av_write_trailer(ofmt_ctx);
-        avio_closep(&ofmt_ctx->pb);
+        if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
+            avio_closep(&ofmt_ctx->pb);
+        }
         avformat_free_context(ofmt_ctx);
     }
-    avformat_close_input(&ifmt_ctx);
-    write_log("Recording stopped\n");
+
+    if (ifmt_ctx) {
+        avformat_close_input(&ifmt_ctx);
+    }
+
+    av_packet_free(&pkt);
+    write_log("录制停止\n");
     return 0;
 }
 
-void main_record()
-{
+void main_record() {
     avformat_network_init();
     av_log_set_level(AV_LOG_ERROR);
-    write_log("Service started\n");
+    write_log("服务启动成功\n");
 
-    while (1)
-    {
-        if (WaitForSingleObject(g_hStopEvent, 0) == WAIT_OBJECT_0) break;
-
+    while (1) {
         char* url = get_new_rtsp_url();
-        if (strlen(url) > 0)
-            start_record(url);
-        else
-            write_log("Empty RTSP URL, retry...\n");
-
+        start_record(url);
         av_usleep(RECONNECT_DELAY);
     }
 
     avformat_network_deinit();
-    write_log("Service stopped normally\n");
 }
 
 void WINAPI ServiceMain(DWORD argc, LPSTR* argv);
-void ServiceControl(DWORD dwCtrlCode);
-void InstallService();
-void UninstallService();
+void ServiceCtrlHandler(DWORD ctrlCode);
+int InstallService();
+int UninstallService();
 
-int main(int argc, char* argv[])
-{
-    // 必须管理员运行！
-    if (argc > 1)
-    {
-        if (!strcmp(argv[1], "install"))
-        {
-            InstallService();
-            return 0;
+int main(int argc, char* argv[]) {
+    if (argc > 1) {
+        if (!strcmp(argv[1], "install")) {
+            int result = InstallService();
+            if (result == 0) {
+                MessageBox(NULL, "服务安装成功！\n请在命令行执行：net start RTSPRecorder\n或在服务管理器中启动", "成功", MB_OK);
+            } else {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "服务安装失败！错误代码: %d\n请以管理员身份运行此程序", result);
+                MessageBox(NULL, msg, "失败", MB_ICONERROR);
+            }
+            return result;
         }
-        if (!strcmp(argv[1], "uninstall"))
-        {
-            UninstallService();
-            return 0;
+        if (!strcmp(argv[1], "uninstall")) {
+            int result = UninstallService();
+            if (result == 0) {
+                MessageBox(NULL, "服务卸载成功！", "成功", MB_OK);
+            } else {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "服务卸载失败！错误代码: %d", result);
+                MessageBox(NULL, msg, "失败", MB_ICONERROR);
+            }
+            return result;
         }
     }
 
-    g_hStopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-
-    SERVICE_TABLE_ENTRY serviceTable[] =
-    {
+    SERVICE_TABLE_ENTRY svcTable[] = {
         {SERVICE_NAME, ServiceMain},
         {NULL, NULL}
     };
-    if (!StartServiceCtrlDispatcher(serviceTable))
-    {
-        // 非服务模式，直接运行
-        write_log("Run in console mode\n");
-        main_record();
-    }
+    StartServiceCtrlDispatcher(svcTable);
     return 0;
 }
 
-void WINAPI ServiceMain(DWORD argc, LPSTR* argv)
-{
-    serviceStatusHandle = RegisterServiceCtrlHandlerA(SERVICE_NAME, ServiceControl);
-    ZeroMemory(&serviceStatus, sizeof(serviceStatus));
+void WINAPI ServiceMain(DWORD argc, LPSTR* argv) {
+    g_ServiceStatusHandle = RegisterServiceCtrlHandler(SERVICE_NAME, ServiceCtrlHandler);
 
-    serviceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-    serviceStatus.dwCurrentState = SERVICE_START_PENDING;
-    serviceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
-    serviceStatus.dwWin32ExitCode = NO_ERROR;
-    serviceStatus.dwCheckPoint = 1;
-    SetServiceStatus(serviceStatusHandle, &serviceStatus);
+    g_ServiceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+    g_ServiceStatus.dwCurrentState = SERVICE_START_PENDING;
+    g_ServiceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
+    SetServiceStatus(g_ServiceStatusHandle, &g_ServiceStatus);
 
-    serviceStatus.dwCurrentState = SERVICE_RUNNING;
-    serviceStatus.dwCheckPoint = 0;
-    SetServiceStatus(serviceStatusHandle, &serviceStatus);
+    g_ServiceStatus.dwCurrentState = SERVICE_RUNNING;
+    SetServiceStatus(g_ServiceStatusHandle, &g_ServiceStatus);
 
     main_record();
-
-    serviceStatus.dwCurrentState = SERVICE_STOPPED;
-    serviceStatus.dwWin32ExitCode = NO_ERROR;
-    SetServiceStatus(serviceStatusHandle, &serviceStatus);
 }
 
-void ServiceControl(DWORD dwCtrlCode)
-{
-    switch (dwCtrlCode)
-    {
-    case SERVICE_CONTROL_STOP:
-    case SERVICE_CONTROL_SHUTDOWN:
-        serviceStatus.dwCurrentState = SERVICE_STOP_PENDING;
-        SetServiceStatus(serviceStatusHandle, &serviceStatus);
-        SetEvent(g_hStopEvent);
-        Sleep(1000);
-        serviceStatus.dwCurrentState = SERVICE_STOPPED;
-        SetServiceStatus(serviceStatusHandle, &serviceStatus);
-        break;
-    default: break;
+void ServiceCtrlHandler(DWORD ctrlCode) {
+    switch (ctrlCode) {
+        case SERVICE_CONTROL_STOP:
+        case SERVICE_CONTROL_SHUTDOWN:
+            g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+            SetServiceStatus(g_ServiceStatusHandle, &g_ServiceStatus);
+            ExitProcess(0);
+            break;
+        default:
+            break;
     }
 }
 
-void InstallService()
-{
-    SC_HANDLE hSCManager = OpenSCManagerA(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
-    if (!hSCManager)
-    {
-        write_log("OpenSCManager failed: %lu\n", GetLastError());
-        return;
+int InstallService() {
+    SC_HANDLE hSCM = OpenSCManager(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
+    if (!hSCM) {
+        write_log("OpenSCManager 失败: %ld\n", GetLastError());
+        return GetLastError();
     }
 
     char path[1024];
-    GetModuleFileNameA(NULL, path, 1024);
+    if (!GetModuleFileName(NULL, path, sizeof(path))) {
+        write_log("GetModuleFileName 失败\n");
+        CloseServiceHandle(hSCM);
+        return GetLastError();
+    }
 
-    SC_HANDLE hService = CreateServiceA(
-        hSCManager,
+    write_log("服务可执行文件路径: %s\n", path);
+
+    SC_HANDLE hSvc = CreateService(
+        hSCM,
         SERVICE_NAME,
         SERVICE_DISPLAY_NAME,
         SERVICE_ALL_ACCESS,
@@ -336,36 +347,57 @@ void InstallService()
         SERVICE_AUTO_START,
         SERVICE_ERROR_NORMAL,
         path,
-        NULL, NULL, NULL, NULL, SERVICE_DESC
+        NULL, NULL, NULL, NULL, NULL
     );
 
-    if (hService)
-    {
-        write_log("Service installed OK\n");
-        CloseServiceHandle(hService);
+    if (!hSvc) {
+        DWORD error = GetLastError();
+        write_log("CreateService 失败: %ld\n", error);
+        CloseServiceHandle(hSCM);
+        return error;
     }
-    else
-    {
-        write_log("CreateService failed: %lu\n", GetLastError());
-    }
-    CloseServiceHandle(hSCManager);
+
+    // 设置服务描述
+    SERVICE_DESCRIPTION sd;
+    sd.lpDescription = SERVICE_DESCRIPTION;
+    ChangeServiceConfig2(hSvc, SERVICE_CONFIG_DESCRIPTION, &sd);
+
+    write_log("服务 %s 安装成功\n", SERVICE_NAME);
+    CloseServiceHandle(hSvc);
+    CloseServiceHandle(hSCM);
+    return 0;
 }
 
-void UninstallService()
-{
-    SC_HANDLE hSCManager = OpenSCManagerA(NULL, NULL, SC_MANAGER_ALL_ACCESS);
-    if (!hSCManager) return;
-
-    SC_HANDLE hService = OpenServiceA(hSCManager, SERVICE_NAME, SERVICE_ALL_ACCESS);
-    if (hService)
-    {
-        ControlService(hService, SERVICE_CONTROL_STOP, NULL);
-        Sleep(500);
-        if (DeleteService(hService))
-            write_log("Service uninstalled OK\n");
-        else
-            write_log("DeleteService failed: %lu\n", GetLastError());
-        CloseServiceHandle(hService);
+int UninstallService() {
+    SC_HANDLE hSCM = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (!hSCM) {
+        write_log("OpenSCManager 失败: %ld\n", GetLastError());
+        return GetLastError();
     }
-    CloseServiceHandle(hSCManager);
+
+    SC_HANDLE hSvc = OpenService(hSCM, SERVICE_NAME, SERVICE_ALL_ACCESS);
+    if (!hSvc) {
+        DWORD error = GetLastError();
+        write_log("OpenService 失败: %ld (服务可能不存在)\n", error);
+        CloseServiceHandle(hSCM);
+        return error;
+    }
+
+    // 先停止服务
+    SERVICE_STATUS status;
+    ControlService(hSvc, SERVICE_CONTROL_STOP, &status);
+    Sleep(1000);
+
+    if (!DeleteService(hSvc)) {
+        DWORD error = GetLastError();
+        write_log("DeleteService 失败: %ld\n", error);
+        CloseServiceHandle(hSvc);
+        CloseServiceHandle(hSCM);
+        return error;
+    }
+
+    write_log("服务 %s 卸载成功\n", SERVICE_NAME);
+    CloseServiceHandle(hSvc);
+    CloseServiceHandle(hSCM);
+    return 0;
 }
