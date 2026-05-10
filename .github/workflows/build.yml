@@ -53,7 +53,7 @@ jobs:
       # ==============================================
       - name: Compile
         run: |
-          gcc -o rtsp_record.exe rtsp_record.c -I./ffmpeg/include -L./ffmpeg/lib -lavformat -lavcodec -lavutil -lws2_32
+          gcc -o rtsp_record.exe rtsp_record.c -I./ffmpeg/include -L./ffmpeg/lib -lavformat -lavcodec -lavutil -lswresample -lws2_32
 
       # 复制 DLL
       #- name: Copy DLLs
