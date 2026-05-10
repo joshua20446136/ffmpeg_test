@@ -46,6 +46,23 @@ void write_log(const char* fmt, ...) {
     va_end(ap);
 }
 
+static int win_path_to_utf8(const char *path, char *utf8_path, int utf8_path_size) {
+    int wlen = MultiByteToWideChar(CP_ACP, 0, path, -1, NULL, 0);
+    if (!wlen) return -1;
+
+    wchar_t *wpath = (wchar_t*)malloc(wlen * sizeof(wchar_t));
+    if (!wpath) return -1;
+
+    if (!MultiByteToWideChar(CP_ACP, 0, path, -1, wpath, wlen)) {
+        free(wpath);
+        return -1;
+    }
+
+    int len = WideCharToMultiByte(CP_UTF8, 0, wpath, -1, utf8_path, utf8_path_size, NULL, NULL);
+    free(wpath);
+    return len > 0 ? 0 : -1;
+}
+
 void init_service_paths() {
     char module_path[MAX_PATH] = {0};
     if (GetModuleFileName(NULL, module_path, MAX_PATH)) {
@@ -171,7 +188,15 @@ int start_record(const char* rtsp_url) {
     start_time = av_gettime();
     create_filepath(filepath);
 
-    avformat_alloc_output_context2(&ofmt_ctx, NULL, "mp4", filepath);
+    char utf8_filepath[1024] = {0};
+    if (win_path_to_utf8(filepath, utf8_filepath, sizeof(utf8_filepath)) < 0) {
+        write_log("Failed to convert output filepath to UTF-8\n");
+        avformat_close_input(&ifmt_ctx);
+        av_packet_free(&pkt);
+        return -1;
+    }
+
+    avformat_alloc_output_context2(&ofmt_ctx, NULL, "mp4", utf8_filepath);
     if (!ofmt_ctx) {
         write_log("Failed to create output context\n");
         avformat_close_input(&ifmt_ctx);
@@ -183,7 +208,7 @@ int start_record(const char* rtsp_url) {
 
     if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
         write_log("Opening output file: %s\n", filepath);
-        ret = avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE);
+        ret = avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
         if (ret < 0) {
             char errbuf[128] = {0};
             av_log_error_str(ret, errbuf, sizeof(errbuf));
@@ -225,7 +250,12 @@ int start_record(const char* rtsp_url) {
             avformat_free_context(ofmt_ctx);
 
             create_filepath(filepath);
-            avformat_alloc_output_context2(&ofmt_ctx, NULL, "mp4", filepath);
+            char utf8_filepath[1024] = {0};
+            if (win_path_to_utf8(filepath, utf8_filepath, sizeof(utf8_filepath)) < 0) {
+                write_log("Failed to convert segment filepath to UTF-8\n");
+                break;
+            }
+            avformat_alloc_output_context2(&ofmt_ctx, NULL, "mp4", utf8_filepath);
             if (!ofmt_ctx) {
                 write_log("Failed to create segment output context\n");
                 break;
@@ -235,7 +265,7 @@ int start_record(const char* rtsp_url) {
 
             if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
                 write_log("Opening segment file: %s\n", filepath);
-                ret = avio_open(&ofmt_ctx->pb, filepath, AVIO_FLAG_WRITE);
+                ret = avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
                 if (ret < 0) {
                     char errbuf[128] = {0};
                     av_log_error_str(ret, errbuf, sizeof(errbuf));
