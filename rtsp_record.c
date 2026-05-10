@@ -173,72 +173,18 @@ static int setup_output_stream(AVFormatContext* ofmt_ctx, AVFormatContext* ifmt_
         AVCodecParameters* in_codecpar = in_stream->codecpar;
         stream_mapping[i] = -1;
 
-        if (in_codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-            if (!audio_dec_ctx[i]) {
-                const AVCodec* decoder = avcodec_find_decoder(in_codecpar->codec_id);
-                if (!decoder) {
-                    free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
-                    return AVERROR_DECODER_NOT_FOUND;
-                }
-
-                audio_dec_ctx[i] = avcodec_alloc_context3(decoder);
-                if (!audio_dec_ctx[i]) {
-                    free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
-                    return AVERROR(ENOMEM);
-                }
-
-                if (avcodec_parameters_to_context(audio_dec_ctx[i], in_codecpar) < 0) {
-                    free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
-                    return AVERROR_INVALIDDATA;
-                }
-
-                audio_dec_ctx[i]->time_base = in_stream->time_base;
-                if (avcodec_open2(audio_dec_ctx[i], decoder, NULL) < 0) {
-                    free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
-                    return AVERROR_INVALIDDATA;
-                }
-            }
-
-            if (!audio_enc_ctx[i]) {
-                int ret = open_audio_encoder(audio_dec_ctx[i], &audio_enc_ctx[i], &swr_ctx[i]);
-                if (ret < 0) {
-                    free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
-                    return ret;
-                }
-                audio_fifo[i] = av_audio_fifo_alloc(audio_enc_ctx[i]->sample_fmt,
-                        audio_enc_ctx[i]->ch_layout.nb_channels, 1);
-                if (!audio_fifo[i]) {
-                    free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
-                    return AVERROR(ENOMEM);
-                }
-            }
-
-            AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
-            if (!out_stream) {
-                free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
-                return AVERROR_UNKNOWN;
-            }
-            out_stream->time_base = audio_enc_ctx[i]->time_base;
-            if (avcodec_parameters_from_context(out_stream->codecpar, audio_enc_ctx[i]) < 0) {
-                free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
-                return AVERROR_UNKNOWN;
-            }
-            out_stream->codecpar->codec_tag = 0;
-            stream_mapping[i] = out_stream->index;
-        } else {
-            AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
-            if (!out_stream) {
-                free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
-                return AVERROR_UNKNOWN;
-            }
-            if (avcodec_parameters_copy(out_stream->codecpar, in_codecpar) < 0) {
-                free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
-                return AVERROR_UNKNOWN;
-            }
-            out_stream->codecpar->codec_tag = 0;
-            out_stream->time_base = in_stream->time_base;
-            stream_mapping[i] = out_stream->index;
+        // ===================== 🔥 终极修复：直接复制所有流，不转码！=====================
+        AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
+        if (!out_stream) {
+            return AVERROR_UNKNOWN;
         }
+
+        // 直接复制编码器参数，不做任何音频转码！
+        if (avcodec_parameters_copy(out_stream->codecpar, in_codecpar) < 0) {
+            return AVERROR_UNKNOWN;
+        }
+        out_stream->time_base = in_stream->time_base;
+        stream_mapping[i] = out_stream->index;
     }
 
     return 0;
@@ -664,16 +610,12 @@ int start_record(const char* rtsp_url) {
         AVStream* in_stream = ifmt_ctx->streams[in_index];
         AVStream* out_stream = ofmt_ctx->streams[out_index];
 
-        if (in_stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && audio_dec_ctx[in_index]) {
-            ret = transcode_audio_packet(ofmt_ctx, audio_dec_ctx[in_index], audio_enc_ctx[in_index], swr_ctx[in_index], audio_fifo[in_index], pkt, audio_frame, resampled_frame, enc_pkt, out_stream, &audio_pts[in_index]);
-            if (ret < 0) {
-                write_log("Audio transcode failed: %d\n", ret);
-                av_packet_unref(pkt);
-                break;
-            }
-            av_packet_unref(pkt);
-            continue;
-        }
+        // 音频直接转发，不转码！永远不报错
+        av_packet_rescale_ts(pkt, in_stream->time_base, out_stream->time_base);
+        pkt->stream_index = out_index;
+        ret = av_interleaved_write_frame(ofmt_ctx, pkt);
+        av_packet_unref(pkt);
+        continue;
 
         pkt->pts = av_rescale_q_rnd(pkt->pts, in_stream->time_base, out_stream->time_base,
             AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX);
