@@ -56,8 +56,8 @@ jobs:
           gcc -o rtsp_record.exe rtsp_record.c -I./ffmpeg/include -L./ffmpeg/lib -lavformat -lavcodec -lavutil -lws2_32
 
       # 复制 DLL
-      - name: Copy DLLs
-        run: copy ffmpeg/bin/*.dll .
+      #- name: Copy DLLs
+      #  run: copy ffmpeg/bin/*.dll .
 
       # 上传
       - name: Upload
@@ -66,4 +66,4 @@ jobs:
           name: rtsp_record_windows
           path: |
             rtsp_record.exe
-            *.dll
+         #   *.dll
