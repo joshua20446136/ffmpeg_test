@@ -207,6 +207,13 @@ static int setup_output_stream(AVFormatContext* ofmt_ctx, AVFormatContext* ifmt_
                 }
                 audio_fifo[i] = av_audio_fifo_alloc(audio_enc_ctx[i]->sample_fmt,
                         audio_enc_ctx[i]->ch_layout.nb_channels, 1);
+                if (!audio_fifo[i]) {
+                    free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
+                    return AVERROR(ENOMEM);
+                }
+            }
+
+            AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
             if (!out_stream) {
                 free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
                 return AVERROR_UNKNOWN;
