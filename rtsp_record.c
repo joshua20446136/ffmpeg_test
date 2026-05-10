@@ -414,7 +414,24 @@ static int flush_audio_fifo(AVFormatContext* ofmt_ctx, AVAudioFifo* fifo,
 
 static int transcode_audio_frame(AVAudioFifo* fifo, AVCodecContext* enc_ctx,
     SwrContext* swr_ctx, AVFrame* frame, AVFrame* resampled) {
-    int ret = swr_convert_frame(swr_ctx, resampled, frame);
+    int ret;
+
+    av_frame_unref(resampled);
+    av_channel_layout_copy(&resampled->ch_layout, &enc_ctx->ch_layout);
+    resampled->sample_rate = enc_ctx->sample_rate;
+    resampled->format = enc_ctx->sample_fmt;
+    resampled->pts = frame->pts;
+
+    int in_sample_rate = frame->sample_rate ? frame->sample_rate : enc_ctx->sample_rate;
+    resampled->nb_samples = av_rescale_rnd(frame->nb_samples,
+        enc_ctx->sample_rate, in_sample_rate, AV_ROUND_UP);
+
+    ret = av_frame_get_buffer(resampled, 0);
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = swr_convert_frame(swr_ctx, resampled, frame);
     if (ret < 0) {
         return ret;
     }
@@ -511,9 +528,10 @@ int start_record(const char* rtsp_url) {
     AVFrame* resampled_frame = av_frame_alloc();
     AVPacket* enc_pkt = av_packet_alloc();
 
-    if (!audio_frame || !enc_pkt) {
+    if (!audio_frame || !resampled_frame || !enc_pkt) {
         write_log("Audio buffer allocation failed\n");
         av_frame_free(&audio_frame);
+        av_frame_free(&resampled_frame);
         av_packet_free(&enc_pkt);
         avformat_close_input(&ifmt_ctx);
         av_packet_free(&pkt);
@@ -523,6 +541,7 @@ int start_record(const char* rtsp_url) {
     if (avformat_find_stream_info(ifmt_ctx, NULL) < 0) {
         write_log("Failed to find stream info\n");
         av_frame_free(&audio_frame);
+        av_frame_free(&resampled_frame);
         av_packet_free(&enc_pkt);
         avformat_close_input(&ifmt_ctx);
         av_packet_free(&pkt);
@@ -536,6 +555,7 @@ int start_record(const char* rtsp_url) {
     if (win_path_to_utf8(filepath, utf8_filepath, sizeof(utf8_filepath)) < 0) {
         write_log("Failed to convert output filepath to UTF-8\n");
         av_frame_free(&audio_frame);
+        av_frame_free(&resampled_frame);
         av_packet_free(&enc_pkt);
         avformat_close_input(&ifmt_ctx);
         av_packet_free(&pkt);
@@ -546,6 +566,7 @@ int start_record(const char* rtsp_url) {
     if (!ofmt_ctx) {
         write_log("Failed to create output context\n");
         av_frame_free(&audio_frame);
+        av_frame_free(&resampled_frame);
         av_packet_free(&enc_pkt);
         avformat_close_input(&ifmt_ctx);
         av_packet_free(&pkt);
@@ -557,6 +578,7 @@ int start_record(const char* rtsp_url) {
         write_log("Failed to setup output streams: %d\n", ret);
         avformat_free_context(ofmt_ctx);
         av_frame_free(&audio_frame);
+        av_frame_free(&resampled_frame);
         av_packet_free(&enc_pkt);
         free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
         avformat_close_input(&ifmt_ctx);
@@ -573,6 +595,7 @@ int start_record(const char* rtsp_url) {
             write_log("Failed to open output file: %d (%s)\n", ret, errbuf);
             avformat_free_context(ofmt_ctx);
             av_frame_free(&audio_frame);
+            av_frame_free(&resampled_frame);
             av_packet_free(&enc_pkt);
             free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
             avformat_close_input(&ifmt_ctx);
@@ -590,6 +613,7 @@ int start_record(const char* rtsp_url) {
         avio_closep(&ofmt_ctx->pb);
         avformat_free_context(ofmt_ctx);
         av_frame_free(&audio_frame);
+        av_frame_free(&resampled_frame);
         av_packet_free(&enc_pkt);
         free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
         avformat_close_input(&ifmt_ctx);
@@ -723,6 +747,7 @@ int start_record(const char* rtsp_url) {
 
     free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
     av_frame_free(&audio_frame);
+    av_frame_free(&resampled_frame);
     av_packet_free(&enc_pkt);
 
     if (ifmt_ctx) {
