@@ -193,7 +193,6 @@ static int setup_output_stream(AVFormatContext* ofmt_ctx, AVFormatContext* ifmt_
 static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx, SwrContext** swr_ctx)
 {
     const AVCodec* encoder = avcodec_find_encoder(AV_CODEC_ID_AAC);
-    int ret;
     if (!encoder) {
         return AVERROR_ENCODER_NOT_FOUND;
     }
@@ -203,30 +202,36 @@ static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx,
         return AVERROR(ENOMEM);
     }
 
-    // 新版 FFmpeg 正确写法
+    // 新版 FFmpeg 通道设置
     av_channel_layout_copy(&(*enc_ctx)->ch_layout, &dec_ctx->ch_layout);
     (*enc_ctx)->sample_rate = dec_ctx->sample_rate;
     (*enc_ctx)->sample_fmt = AV_SAMPLE_FMT_FLTP;
     (*enc_ctx)->bit_rate = 64000;
     (*enc_ctx)->time_base = (AVRational){1, dec_ctx->sample_rate};
-    (*enc_ctx)->frame_size = 1024; // AAC 固定
+    (*enc_ctx)->frame_size = 1024;
 
     if (avcodec_open2(*enc_ctx, encoder, NULL) < 0) {
         avcodec_free_context(enc_ctx);
         return -1;
     }
 
-    // 新版 swr_alloc_set_opts2
-    *swr_ctx = swr_alloc_set_opts2(NULL,
-        &(*enc_ctx)->ch_layout,
-        (*enc_ctx)->sample_fmt,
-        (*enc_ctx)->sample_rate,
-        &dec_ctx->ch_layout,
-        dec_ctx->sample_fmt,
-        dec_ctx->sample_rate,
-        0, NULL);
+    // 正确创建重采样上下文（新版API）
+    *swr_ctx = swr_alloc();
+    if (!*swr_ctx) {
+        avcodec_free_context(enc_ctx);
+        return -1;
+    }
 
-    if (!*swr_ctx || swr_init(*swr_ctx) < 0) {
+    // 设置重采样参数
+    av_opt_set_chlayout(*swr_ctx, "out_chlayout", &(*enc_ctx)->ch_layout, 0);
+    av_opt_set_int(*swr_ctx, "out_sample_fmt", (*enc_ctx)->sample_fmt, 0);
+    av_opt_set_int(*swr_ctx, "out_sample_rate", (*enc_ctx)->sample_rate, 0);
+
+    av_opt_set_chlayout(*swr_ctx, "in_chlayout", &dec_ctx->ch_layout, 0);
+    av_opt_set_int(*swr_ctx, "in_sample_fmt", dec_ctx->sample_fmt, 0);
+    av_opt_set_int(*swr_ctx, "in_sample_rate", dec_ctx->sample_rate, 0);
+
+    if (swr_init(*swr_ctx) < 0) {
         swr_free(swr_ctx);
         avcodec_free_context(enc_ctx);
         return -1;
@@ -313,17 +318,15 @@ static int transcode_audio_frame(AVAudioFifo* fifo, AVCodecContext* enc_ctx,
     resampled->format = enc_ctx->sample_fmt;
     av_channel_layout_copy(&resampled->ch_layout, &enc_ctx->ch_layout);
     resampled->sample_rate = enc_ctx->sample_rate;
-    resampled->nb_samples = 1024;
+    resampled->nb_samples = enc_ctx->frame_size;
 
     if (av_frame_get_buffer(resampled, 0) < 0)
         return -1;
 
-    // 重采样
     ret = swr_convert_frame(swr_ctx, resampled, frame);
     if (ret < 0)
         return ret;
 
-    // 写入FIFO
     if (av_audio_fifo_write(fifo, (void**)resampled->data, resampled->nb_samples) < 0)
         return -1;
 
