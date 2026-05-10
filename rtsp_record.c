@@ -328,6 +328,7 @@ static int write_encoded_audio_packet(AVFormatContext* ofmt_ctx, AVPacket* pkt,
 static int encode_audio_from_fifo(AVFormatContext* ofmt_ctx, AVAudioFifo* fifo,
     AVCodecContext* enc_ctx, AVStream* out_stream, AVPacket* pkt, int64_t* audio_pts) {
     int ret;
+    int frame_size = enc_ctx->frame_size;  // 必须定义！
     while (av_audio_fifo_size(fifo) >= enc_ctx->frame_size) {
         AVFrame* output_frame = av_frame_alloc();
         if (!output_frame) {
@@ -346,13 +347,15 @@ static int encode_audio_from_fifo(AVFormatContext* ofmt_ctx, AVAudioFifo* fifo,
         }
 
         ret = av_audio_fifo_read(fifo, (void**)output_frame->data, enc_ctx->frame_size);
-        if (ret < enc_ctx->frame_size) {
+        if (ret < 0) {
             av_frame_free(&output_frame);
             return AVERROR_UNKNOWN;
         }
 
+        //output_frame->pts = *audio_pts;
+        //*audio_pts += output_frame->nb_samples;
         output_frame->pts = *audio_pts;
-        *audio_pts += output_frame->nb_samples;
+        *audio_pts += frame_size;  // 按采样数累加
 
         ret = avcodec_send_frame(enc_ctx, output_frame);
         av_frame_free(&output_frame);
@@ -460,7 +463,7 @@ static int transcode_audio_packet(AVFormatContext* ofmt_ctx, AVCodecContext* dec
 
     while ((ret = avcodec_receive_frame(dec_ctx, frame)) >= 0) {
         frame->time_base = dec_ctx->time_base;
-        resampled->pts = frame->pts;
+        //resampled->pts = frame->pts;
         ret = transcode_audio_frame(fifo, enc_ctx, swr_ctx, frame, resampled);
         if (ret < 0) {
             av_frame_unref(frame);
