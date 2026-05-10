@@ -19,7 +19,7 @@
 
 #define SERVICE_NAME "RTSPRecorder"
 #define SERVICE_DISPLAY_NAME "RTSP Recorder Service"
-#define SERVICE_DESCRIPTION "RTSP Camera Recorder Service"
+#define SERVICE_DESC_TEXT "RTSP Camera Recorder Service"
 
 FILE* log_fp = NULL;
 SERVICE_STATUS g_ServiceStatus;
@@ -359,7 +359,7 @@ int InstallService() {
 
     // 设置服务描述
     SERVICE_DESCRIPTION sd;
-    sd.lpDescription = SERVICE_DESCRIPTION;
+    sd.lpDescription = SERVICE_DESC_TEXT;
     ChangeServiceConfig2(hSvc, SERVICE_CONFIG_DESCRIPTION, &sd);
 
     write_log("服务 %s 安装成功\n", SERVICE_NAME);
