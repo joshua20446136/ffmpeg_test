@@ -158,6 +158,8 @@ static void free_audio_transcoding(AVCodecContext** audio_dec_ctx, AVCodecContex
     }
 }
 
+static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx, SwrContext** swr_ctx);
+
 static int setup_output_stream(AVFormatContext* ofmt_ctx, AVFormatContext* ifmt_ctx,
     AVCodecContext** audio_dec_ctx, AVCodecContext** audio_enc_ctx,
     SwrContext** swr_ctx, int* stream_mapping) {
@@ -169,7 +171,7 @@ static int setup_output_stream(AVFormatContext* ofmt_ctx, AVFormatContext* ifmt_
 
         if (in_codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
             if (!audio_dec_ctx[i]) {
-                AVCodec* decoder = avcodec_find_decoder(in_codecpar->codec_id);
+                const AVCodec* decoder = avcodec_find_decoder(in_codecpar->codec_id);
                 if (!decoder) {
                     free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, ifmt_ctx->nb_streams);
                     return AVERROR_DECODER_NOT_FOUND;
@@ -248,11 +250,20 @@ static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx,
     if ((*enc_ctx)->ch_layout.nb_channels == 0) {
         av_channel_layout_default(&(*enc_ctx)->ch_layout, dec_ctx->ch_layout.nb_channels);
     }
-    (*enc_ctx)->sample_fmt = encoder->sample_fmts ? encoder->sample_fmts[0] : AV_SAMPLE_FMT_FLTP;
+
+    // Use new API to get supported sample formats
+    const enum AVSampleFormat* sample_fmts = NULL;
+    int ret = avcodec_get_supported_config(*enc_ctx, encoder, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0, (const void**)&sample_fmts, NULL);
+    if (ret >= 0 && sample_fmts) {
+        (*enc_ctx)->sample_fmt = sample_fmts[0];
+    } else {
+        (*enc_ctx)->sample_fmt = AV_SAMPLE_FMT_FLTP; // fallback
+    }
+
     (*enc_ctx)->time_base = (AVRational){1, (*enc_ctx)->sample_rate};
     (*enc_ctx)->bit_rate = 128000;
 
-    int ret = avcodec_open2(*enc_ctx, encoder, NULL);
+    ret = avcodec_open2(*enc_ctx, encoder, NULL);
     if (ret < 0) {
         avcodec_free_context(enc_ctx);
         return ret;
