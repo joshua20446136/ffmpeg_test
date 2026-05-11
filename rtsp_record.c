@@ -158,7 +158,7 @@ void create_filepath(char* path) {
     _ftime(&tb);
     struct tm* t = localtime(&tb.time);
     int ms = tb.millitm;
-    snprintf(path, 512, "%s\\%04d%02d%02d%02d%02d%02d-%03d00.%s",
+    snprintf(path, 512, "%s\\%04d%02d%02d%02d%02d%02d-%5d.%s",
         dir,
         t->tm_year + 1900,
         t->tm_mon + 1,
