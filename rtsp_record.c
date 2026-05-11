@@ -20,7 +20,7 @@
 #define RECONNECT_DELAY 3000000
 #define PYTHON_SCRIPT "get_rtsp.py"
 #define LOG_FILE "record.log"
-#define OUTPUT_EXTENSION "TS"
+#define OUTPUT_EXTENSION "mp4"
 #define MAX_STREAMS 64
 
 #define SERVICE_NAME "RTSPRecorder"
@@ -203,7 +203,7 @@ int start_record(const char* rtsp_url) {
         return -1;
     }
 
-    avformat_alloc_output_context2(&ofmt_ctx, NULL, "mpegts", utf8_filepath);
+    avformat_alloc_output_context2(&ofmt_ctx, NULL, "mov", utf8_filepath);
 
     for (i = 0; i < ifmt_ctx->nb_streams; i++) {
         AVStream* in_stream = ifmt_ctx->streams[i];
@@ -245,7 +245,7 @@ int start_record(const char* rtsp_url) {
                 write_log("Failed to convert output filepath to UTF-8\n");
                 return -1;
             }
-            avformat_alloc_output_context2(&ofmt_ctx, NULL, "mpegts", utf8_filepath);
+            avformat_alloc_output_context2(&ofmt_ctx, NULL, "mov", utf8_filepath);
             for (i = 0; i < ifmt_ctx->nb_streams; i++) {
                 AVStream* in_stream = ifmt_ctx->streams[i];
                 AVCodecParameters *par = in_stream->codecpar;
