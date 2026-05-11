@@ -20,7 +20,7 @@
 #define RECONNECT_DELAY 3000000
 #define PYTHON_SCRIPT "get_rtsp.py"
 #define LOG_FILE "record.log"
-#define OUTPUT_EXTENSION "mp4"
+#define OUTPUT_EXTENSION "TS"
 #define MAX_STREAMS 64
 
 #define SERVICE_NAME "RTSPRecorder"
