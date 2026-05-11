@@ -211,7 +211,14 @@ int start_record(const char* rtsp_url) {
     }
 
     ret = avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
-    ret = avformat_write_header(ofmt_ctx, NULL);
+    if (ret < 0) {
+        write_log("打开输出文件失败\n");
+        return ret;
+    }
+    if (avformat_write_header(ofmt_ctx, NULL) < 0) {
+        write_log("写文件头失败\n");
+        return;
+    }
 
     while (1) {
         ret = av_read_frame(ifmt_ctx, &pkt);
@@ -237,7 +244,10 @@ int start_record(const char* rtsp_url) {
                 avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
             }
             avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
-            avformat_write_header(ofmt_ctx, NULL);
+            if (avformat_write_header(ofmt_ctx, NULL) < 0) {
+                write_log("写文件头失败\n");
+                return;
+            }
             start_time = av_gettime();
         }
 
