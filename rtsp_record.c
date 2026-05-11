@@ -166,385 +166,90 @@ void create_filepath(char* path) {
         t->tm_hour,
         t->tm_min,
         t->tm_sec,
-        ms,
+        SEGMENT_DURATION*1000,
         OUTPUT_EXTENSION);
     write_log("Created output filepath: %s\n", path);
 }
 
-static void free_audio_transcoding(AVCodecContext** audio_dec_ctx, AVCodecContext** audio_enc_ctx, SwrContext** swr_ctx, AVAudioFifo** audio_fifo, unsigned int nb_streams) {
-    for (unsigned int i = 0; i < nb_streams; i++) {
-        if (audio_dec_ctx[i]) {
-            avcodec_free_context(&audio_dec_ctx[i]);
-        }
-        if (audio_enc_ctx[i]) {
-            avcodec_free_context(&audio_enc_ctx[i]);
-        }
-        if (swr_ctx[i]) {
-            swr_free(&swr_ctx[i]);
-        }
-        if (audio_fifo[i]) {
-            av_audio_fifo_free(audio_fifo[i]);
-        }
-    }
-}
-
-static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx, SwrContext** swr_ctx);
-
-static int setup_output_stream(AVFormatContext* ofmt_ctx, AVFormatContext* ifmt_ctx,
-    AVCodecContext** audio_dec_ctx, AVCodecContext** audio_enc_ctx,
-    SwrContext** swr_ctx, AVAudioFifo** audio_fifo, int* stream_mapping)
-{
-    for (unsigned int i = 0; i < ifmt_ctx->nb_streams; i++) {
-        AVStream* in_stream = ifmt_ctx->streams[i];
-        AVCodecParameters* in_codecpar = in_stream->codecpar;
-        stream_mapping[i] = -1;
-
-        AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
-        if (!out_stream) return -1;
-
-        if (in_codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            if (avcodec_parameters_copy(out_stream->codecpar, in_codecpar) < 0)
-                return -1;
-            out_stream->time_base = in_stream->time_base;
-            stream_mapping[i] = out_stream->index;
-        }
-        else if (in_codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-            const AVCodec* dec_codec = avcodec_find_decoder(in_codecpar->codec_id);
-            if (!dec_codec) return -1;
-
-            audio_dec_ctx[i] = avcodec_alloc_context3(dec_codec);
-            avcodec_parameters_to_context(audio_dec_ctx[i], in_codecpar);
-            if (avcodec_open2(audio_dec_ctx[i], dec_codec, NULL) < 0)
-                return -1;
-
-            if (open_audio_encoder(audio_dec_ctx[i], &audio_enc_ctx[i], &swr_ctx[i]) < 0)
-                return -1;
-
-            audio_fifo[i] = av_audio_fifo_alloc(audio_enc_ctx[i]->sample_fmt,
-                audio_enc_ctx[i]->ch_layout.nb_channels, 4096);
-            if (!audio_fifo[i]) return -1;
-
-            avcodec_parameters_from_context(out_stream->codecpar, audio_enc_ctx[i]);
-            out_stream->time_base = audio_enc_ctx[i]->time_base;
-            stream_mapping[i] = out_stream->index;
-        }
-    }
-    return 0;
-}
-
-static int open_audio_encoder(AVCodecContext* dec_ctx, AVCodecContext** enc_ctx, SwrContext** swr_ctx)
-{
-    const AVCodec* encoder = avcodec_find_encoder(AV_CODEC_ID_AAC);
-    if (!encoder) return -1;
-
-    *enc_ctx = avcodec_alloc_context3(encoder);
-    if (!*enc_ctx) return -1;
-
-    av_channel_layout_copy(&(*enc_ctx)->ch_layout, &dec_ctx->ch_layout);
-    (*enc_ctx)->sample_rate = dec_ctx->sample_rate;
-    (*enc_ctx)->sample_fmt = AV_SAMPLE_FMT_FLTP;
-    (*enc_ctx)->bit_rate = 64000;
-    (*enc_ctx)->time_base = (AVRational){1, dec_ctx->sample_rate};
-    (*enc_ctx)->frame_size = 1024;
-
-    if (avcodec_open2(*enc_ctx, encoder, NULL) < 0) {
-        avcodec_free_context(enc_ctx);
-        return -1;
-    }
-
-    *swr_ctx = swr_alloc();
-    av_opt_set_chlayout(*swr_ctx, "out_chlayout", &(*enc_ctx)->ch_layout, 0);
-    av_opt_set_int(*swr_ctx, "out_sample_fmt", (*enc_ctx)->sample_fmt, 0);
-    av_opt_set_int(*swr_ctx, "out_sample_rate", (*enc_ctx)->sample_rate, 0);
-    av_opt_set_chlayout(*swr_ctx, "in_chlayout", &dec_ctx->ch_layout, 0);
-    av_opt_set_int(*swr_ctx, "in_sample_fmt", dec_ctx->sample_fmt, 0);
-    av_opt_set_int(*swr_ctx, "in_sample_rate", dec_ctx->sample_rate, 0);
-
-    if (swr_init(*swr_ctx) < 0) {
-        swr_free(swr_ctx);
-        avcodec_free_context(enc_ctx);
-        return -1;
-    }
-    return 0;
-}
-
-static int write_encoded_audio_packet(AVFormatContext* ofmt_ctx, AVPacket* pkt,
-    AVCodecContext* enc_ctx, AVStream* out_stream) {
-    int ret;
-    while ((ret = avcodec_receive_packet(enc_ctx, pkt)) >= 0) {
-        av_packet_rescale_ts(pkt, enc_ctx->time_base, out_stream->time_base);
-        pkt->stream_index = out_stream->index;
-        ret = av_interleaved_write_frame(ofmt_ctx, pkt);
-        av_packet_unref(pkt);
-        if (ret < 0) return ret;
-    }
-    av_packet_unref(pkt);
-    return (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) ? 0 : ret;
-}
-
-static int encode_audio_from_fifo(AVFormatContext* ofmt_ctx, AVAudioFifo* fifo,
-    AVCodecContext* enc_ctx, AVStream* out_stream, AVPacket* pkt, int64_t* audio_pts) {
-    int ret;
-    int frame_size = enc_ctx->frame_size;
-
-    while (av_audio_fifo_size(fifo) >= frame_size) {
-        AVFrame* output_frame = av_frame_alloc();
-        if (!output_frame) return -1;
-
-        av_channel_layout_copy(&output_frame->ch_layout, &enc_ctx->ch_layout);
-        output_frame->sample_rate = enc_ctx->sample_rate;
-        output_frame->format = enc_ctx->sample_fmt;
-        output_frame->nb_samples = frame_size;
-
-        if (av_frame_get_buffer(output_frame, 0) < 0) {
-            av_frame_free(&output_frame);
-            return -1;
-        }
-
-        ret = av_audio_fifo_read(fifo, (void**)output_frame->data, frame_size);
-        if (ret < 0) {
-            av_frame_free(&output_frame);
-            return ret;
-        }
-
-        output_frame->pts = *audio_pts;
-        *audio_pts += frame_size;
-
-        ret = avcodec_send_frame(enc_ctx, output_frame);
-        av_frame_free(&output_frame);
-        if (ret < 0) return ret;
-
-        ret = write_encoded_audio_packet(ofmt_ctx, pkt, enc_ctx, out_stream);
-        if (ret < 0) return ret;
-    }
-    return 0;
-}
-
-static int flush_audio_fifo(AVFormatContext* ofmt_ctx, AVAudioFifo* fifo,
-    AVCodecContext* enc_ctx, AVStream* out_stream, AVPacket* pkt, int64_t* audio_pts) {
-    av_audio_fifo_reset(fifo);
-    return 0;
-}
-
-static int transcode_audio_frame(AVAudioFifo* fifo, AVCodecContext* enc_ctx,
-    SwrContext* swr_ctx, AVFrame* frame, AVFrame* resampled)
-{
-    int ret;
-    av_frame_unref(resampled);
-
-    resampled->format = enc_ctx->sample_fmt;
-    av_channel_layout_copy(&resampled->ch_layout, &enc_ctx->ch_layout);
-    resampled->sample_rate = enc_ctx->sample_rate;
-    resampled->nb_samples = enc_ctx->frame_size;
-
-    if (av_frame_get_buffer(resampled, 0) < 0)
-        return -1;
-
-    ret = swr_convert_frame(swr_ctx, resampled, frame);
-    if (ret < 0) return ret;
-
-    if (av_audio_fifo_write(fifo, (void**)resampled->data, resampled->nb_samples) < 0)
-        return -1;
-    return 0;
-}
-
-static int transcode_audio_packet(AVFormatContext* ofmt_ctx, AVCodecContext* dec_ctx,
-    AVCodecContext* enc_ctx, SwrContext* swr_ctx, AVAudioFifo* fifo,
-    AVPacket* pkt, AVFrame* frame, AVFrame* resampled, AVPacket* enc_pkt,
-    AVStream* out_stream, int64_t* audio_pts) {
-    int ret = avcodec_send_packet(dec_ctx, pkt);
-    if (ret < 0) return ret;
-
-    while ((ret = avcodec_receive_frame(dec_ctx, frame)) == 0) {
-        if (frame->nb_samples <= 0 || !frame->data[0]) {
-            av_frame_unref(frame);
-            continue;
-        }
-        ret = transcode_audio_frame(fifo, enc_ctx, swr_ctx, frame, resampled);
-        if (ret < 0) { av_frame_unref(frame); return ret; }
-
-        ret = encode_audio_from_fifo(ofmt_ctx, fifo, enc_ctx, out_stream, enc_pkt, audio_pts);
-        if (ret < 0) { av_frame_unref(frame); return ret; }
-        av_frame_unref(frame);
-    }
-    return (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) ? 0 : ret;
-}
-
-static int flush_audio_encoder(AVFormatContext* ofmt_ctx, AVCodecContext* enc_ctx,
-    AVPacket* pkt, AVStream* out_stream) {
-    int ret = avcodec_send_frame(enc_ctx, NULL);
-    if (ret < 0) return ret;
-    return write_encoded_audio_packet(ofmt_ctx, pkt, enc_ctx, out_stream);
-}
-
 int start_record(const char* rtsp_url) {
     AVFormatContext *ifmt_ctx = NULL, *ofmt_ctx = NULL;
-    AVPacket* pkt = av_packet_alloc();
-    int ret;
+    AVPacket pkt;
+    int ret, i;
     int64_t start_time = 0;
     double duration = 0;
     char filepath[512];
 
-    if (!pkt) {
-        write_log("Memory allocation failed\n");
-        return -1;
-    }
-
-    write_log("Starting recording: %s\n", rtsp_url);
+    write_log("开始录制: %s\n", rtsp_url);
 
     AVDictionary* options = NULL;
     av_dict_set(&options, "rtsp_transport", "tcp", 0);
-    av_dict_set(&options, "stimeout", "10000000", 0);
-    av_dict_set(&options, "max_delay", "5000000", 0);
+    av_dict_set(&options, "stimeout", "5000000", 0);
 
     ret = avformat_open_input(&ifmt_ctx, rtsp_url, NULL, &options);
     av_dict_free(&options);
     if (ret < 0) {
-        write_log("Failed to open RTSP: %d\n", ret);
-        av_packet_free(&pkt);
+        write_log("打开RTSP失败\n");
         return ret;
     }
 
-    int stream_mapping[MAX_STREAMS];
-    AVCodecContext* audio_dec_ctx[MAX_STREAMS] = {0};
-    AVCodecContext* audio_enc_ctx[MAX_STREAMS] = {0};
-    SwrContext* swr_ctx[MAX_STREAMS] = {0};
-    AVAudioFifo* audio_fifo[MAX_STREAMS] = {0};
-    int64_t audio_pts[MAX_STREAMS] = {0};
-    AVFrame* audio_frame = av_frame_alloc();
-    AVFrame* resampled_frame = av_frame_alloc();
-    AVPacket* enc_pkt = av_packet_alloc();
-
-    if (!audio_frame || !resampled_frame || !enc_pkt) {
-        write_log("Audio buffer allocation failed\n");
-        goto cleanup;
-    }
-
-    if (avformat_find_stream_info(ifmt_ctx, NULL) < 0) {
-        write_log("Failed to find stream info\n");
-        goto cleanup;
-    }
-
+    avformat_find_stream_info(ifmt_ctx, NULL);
     start_time = av_gettime();
     create_filepath(filepath);
 
     char utf8_filepath[1024] = {0};
     if (win_path_to_utf8(filepath, utf8_filepath, sizeof(utf8_filepath)) < 0) {
         write_log("Failed to convert output filepath to UTF-8\n");
-        goto cleanup;
+        return -1;
     }
 
-    avformat_alloc_output_context2(&ofmt_ctx, NULL, "mp4", utf8_filepath);
-    if (!ofmt_ctx) {
-        write_log("Failed to create output context\n");
-        goto cleanup;
+    avformat_alloc_output_context2(&ofmt_ctx, NULL, "mpegts", utf8_filepath);
+
+    for (i = 0; i < ifmt_ctx->nb_streams; i++) {
+        AVStream* in_stream = ifmt_ctx->streams[i];
+        AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
+        avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
     }
 
-    ret = setup_output_stream(ofmt_ctx, ifmt_ctx, audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, stream_mapping);
-    if (ret < 0) {
-        write_log("Failed to setup output streams: %d\n", ret);
-        goto cleanup;
-    }
-
-    if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
-        ret = avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
-        if (ret < 0) {
-            char errbuf[128];
-            av_log_error_str(ret, errbuf, sizeof(errbuf));
-            write_log("Failed to open output file: %s\n", errbuf);
-            goto cleanup;
-        }
-    }
-
+    ret = avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
     ret = avformat_write_header(ofmt_ctx, NULL);
-    if (ret < 0) {
-        write_log("Failed to write file header: %d\n", ret);
-        goto cleanup;
-    }
 
     while (1) {
-        ret = av_read_frame(ifmt_ctx, pkt);
-        if (ret < 0) {
-            write_log("Connection lost: %d\n", ret);
-            break;
-        }
+        ret = av_read_frame(ifmt_ctx, &pkt);
+        if (ret < 0) break;
 
         duration = (av_gettime() - start_time) / 1000000.0;
         if (duration >= SEGMENT_DURATION) {
-            write_log("Segment finished\n");
-            for (unsigned int idx = 0; idx < ifmt_ctx->nb_streams; idx++) {
-                if (audio_enc_ctx[idx] && stream_mapping[idx] >= 0) {
-                    flush_audio_fifo(ofmt_ctx, audio_fifo[idx], audio_enc_ctx[idx], ofmt_ctx->streams[stream_mapping[idx]], enc_pkt, &audio_pts[idx]);
-                    flush_audio_encoder(ofmt_ctx, audio_enc_ctx[idx], enc_pkt, ofmt_ctx->streams[stream_mapping[idx]]);
-                    audio_pts[idx] = 0;
-                }
-            }
+            write_log("分段: %s\n", filepath);
             av_write_trailer(ofmt_ctx);
             avio_closep(&ofmt_ctx->pb);
             avformat_free_context(ofmt_ctx);
 
             create_filepath(filepath);
-            if (win_path_to_utf8(filepath, utf8_filepath, sizeof(utf8_filepath)) < 0) break;
-            avformat_alloc_output_context2(&ofmt_ctx, NULL, "mp4", utf8_filepath);
-            if (!ofmt_ctx) break;
 
-            ret = setup_output_stream(ofmt_ctx, ifmt_ctx, audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, stream_mapping);
-            if (ret < 0) break;
-            if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
-                avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
+            if (win_path_to_utf8(filepath, utf8_filepath, sizeof(utf8_filepath)) < 0) {
+                write_log("Failed to convert output filepath to UTF-8\n");
+                return -1;
             }
-            ret = avformat_write_header(ofmt_ctx, NULL);
-            if (ret < 0) break;
+            avformat_alloc_output_context2(&ofmt_ctx, NULL, "mpegts", utf8_filepath);
+            for (i = 0; i < ifmt_ctx->nb_streams; i++) {
+                AVStream* in_stream = ifmt_ctx->streams[i];
+                AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
+                avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
+            }
+            avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
+            avformat_write_header(ofmt_ctx, NULL);
             start_time = av_gettime();
         }
 
-        int in_idx = pkt->stream_index;
-        if (in_idx < 0 || in_idx >= MAX_STREAMS) {
-            av_packet_unref(pkt);
-            continue;
-        }
-        int out_idx = stream_mapping[in_idx];
-        if (out_idx < 0) {
-            av_packet_unref(pkt);
-            continue;
-        }
-
-        AVStream* in_st = ifmt_ctx->streams[in_idx];
-        AVStream* out_st = ofmt_ctx->streams[out_idx];
-
-        if (in_st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            av_packet_rescale_ts(pkt, in_st->time_base, out_st->time_base);
-            pkt->stream_index = out_idx;
-            av_interleaved_write_frame(ofmt_ctx, pkt);
-        } else {
-            transcode_audio_packet(ofmt_ctx, audio_dec_ctx[in_idx], audio_enc_ctx[in_idx],
-                swr_ctx[in_idx], audio_fifo[in_idx], pkt, audio_frame, resampled_frame,
-                enc_pkt, out_st, &audio_pts[in_idx]);
-        }
-        av_packet_unref(pkt);
+        av_interleaved_write_frame(ofmt_ctx, &pkt);
+        av_packet_unref(&pkt);
     }
 
-cleanup:
-    for (unsigned int idx = 0; idx < ifmt_ctx->nb_streams; idx++) {
-        if (audio_enc_ctx[idx] && stream_mapping[idx] >= 0) {
-            flush_audio_fifo(ofmt_ctx, audio_fifo[idx], audio_enc_ctx[idx], ofmt_ctx->streams[stream_mapping[idx]], enc_pkt, &audio_pts[idx]);
-            flush_audio_encoder(ofmt_ctx, audio_enc_ctx[idx], enc_pkt, ofmt_ctx->streams[stream_mapping[idx]]);
-        }
-    }
-
-    if (ofmt_ctx) {
-        av_write_trailer(ofmt_ctx);
-        avio_closep(&ofmt_ctx->pb);
-        avformat_free_context(ofmt_ctx);
-    }
-
-    free_audio_transcoding(audio_dec_ctx, audio_enc_ctx, swr_ctx, audio_fifo, ifmt_ctx->nb_streams);
-    av_frame_free(&audio_frame);
-    av_frame_free(&resampled_frame);
-    av_packet_free(&enc_pkt);
+    av_write_trailer(ofmt_ctx);
+    avio_closep(&ofmt_ctx->pb);
+    avformat_free_context(ofmt_ctx);
     avformat_close_input(&ifmt_ctx);
-    av_packet_free(&pkt);
-    write_log("Recording loop ended\n");
+    write_log("录制停止\n");
     return 0;
 }
 
