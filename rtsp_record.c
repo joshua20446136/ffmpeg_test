@@ -226,6 +226,9 @@ int start_record(const char* rtsp_url) {
         return -1;
     }
 
+    static int first_packet = 1;
+    first_packet = 1;
+
     while (1) {
         ret = av_read_frame(ifmt_ctx, &pkt);
         if (ret < 0) break;
@@ -263,6 +266,7 @@ int start_record(const char* rtsp_url) {
                 return -1;
             }
             start_time = av_gettime();
+            first_packet = 1; // 新段，重置第一帧标记
         }
 
          AVStream* in_stream = ifmt_ctx->streams[pkt.stream_index];
@@ -276,6 +280,12 @@ int start_record(const char* rtsp_url) {
         pkt.dts = av_rescale_q(pkt.dts, in_stream->time_base, out_stream->time_base);
         pkt.duration = av_rescale_q(pkt.duration, in_stream->time_base, out_stream->time_base);
         pkt.pos = -1;
+        if (first_packet) {
+            // 第一帧直接归零！
+            pkt.pts = 0;
+            pkt.dts = 0;
+            first_packet = 0;
+        }
 
         av_interleaved_write_frame(ofmt_ctx, &pkt);
         av_packet_unref(&pkt);
