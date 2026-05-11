@@ -257,6 +257,9 @@ int start_record(const char* rtsp_url) {
             }
             start_time = av_gettime();
         }
+
+         AVStream* in_stream = ifmt_ctx->streams[pkt.stream_index];
+         AVStream* out_stream = ofmt_ctx->streams[pkt.stream_index];
         // 归一化时间戳（从0开始）
         if (pkt.pts != AV_NOPTS_VALUE) {
             if (first_pts == AV_NOPTS_VALUE)
