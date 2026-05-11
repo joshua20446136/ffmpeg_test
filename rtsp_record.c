@@ -207,8 +207,10 @@ int start_record(const char* rtsp_url) {
 
     for (i = 0; i < ifmt_ctx->nb_streams; i++) {
         AVStream* in_stream = ifmt_ctx->streams[i];
-        AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
+        const AVCodec *codec = avcodec_find_decoder(in_stream->codecpar->codec_id);
+        AVStream* out_stream = avformat_new_stream(ofmt_ctx, codec);
         avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
+        out_stream->time_base = in_stream->time_base;
     }
 
     ret = avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
@@ -243,8 +245,10 @@ int start_record(const char* rtsp_url) {
             avformat_alloc_output_context2(&ofmt_ctx, NULL, "mpegts", utf8_filepath);
             for (i = 0; i < ifmt_ctx->nb_streams; i++) {
                 AVStream* in_stream = ifmt_ctx->streams[i];
-                AVStream* out_stream = avformat_new_stream(ofmt_ctx, NULL);
+                const AVCodec *codec = avcodec_find_decoder(in_stream->codecpar->codec_id);
+                AVStream* out_stream = avformat_new_stream(ofmt_ctx, codec);
                 avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
+                out_stream->time_base = in_stream->time_base;
             }
             avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
             if (avformat_write_header(ofmt_ctx, NULL) < 0) {
