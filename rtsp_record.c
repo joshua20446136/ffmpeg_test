@@ -83,6 +83,9 @@ void init_service_paths() {
 
     snprintf(g_log_file, sizeof(g_log_file), "%s\\%s", g_base_dir, LOG_FILE);
     snprintf(g_python_script, sizeof(g_python_script), "%s\\%s", g_base_dir, PYTHON_SCRIPT);
+    write_log("初始化服务路径: %s\n", g_base_dir);
+    write_log("log 文件路径: %s\n", g_log_file);
+    write_log("Python 脚本命令: %s\n", g_python_script);
 }
 
 char* get_new_rtsp_url() {
@@ -90,19 +93,41 @@ char* get_new_rtsp_url() {
     char cmd[1024];
     const char* python_path = g_python_script[0] ? g_python_script : PYTHON_SCRIPT;
     write_log("Calling Python script Path: %s\n", python_path);
-    snprintf(cmd, sizeof(cmd), "python \"%s\"", python_path);
+
+    rtsp_url[0] = '\0';
+    snprintf(cmd, sizeof(cmd), "python \"%s\" 2>&1", python_path);
     FILE* fp = _popen(cmd, "r");
     if (!fp) {
-        write_log("Failed to call Python script\n");
-        return rtsp_url;
+        write_log("Failed to call Python script with python command\n");
+    } else {
+        if (fgets(rtsp_url, sizeof(rtsp_url), fp)) {
+            size_t len = strlen(rtsp_url);
+            while (len > 0 && (rtsp_url[len-1] == '\n' || rtsp_url[len-1] == '\r')) {
+                rtsp_url[--len] = 0;
+            }
+        }
+        _pclose(fp);
     }
-    if (fgets(rtsp_url, sizeof(rtsp_url), fp)) {
-        size_t len = strlen(rtsp_url);
-        if (len > 0 && (rtsp_url[len-1] == '\n' || rtsp_url[len-1] == '\r'))
-            rtsp_url[len-1] = 0;
+
+    if (!rtsp_url[0]) {
+        write_log("python command returned empty result, trying py launcher\n");
+        rtsp_url[0] = '\0';
+        snprintf(cmd, sizeof(cmd), "py -3 \"%s\" 2>&1", python_path);
+        fp = _popen(cmd, "r");
+        if (!fp) {
+            write_log("Failed to call Python script with py launcher\n");
+        } else {
+            if (fgets(rtsp_url, sizeof(rtsp_url), fp)) {
+                size_t len = strlen(rtsp_url);
+                while (len > 0 && (rtsp_url[len-1] == '\n' || rtsp_url[len-1] == '\r')) {
+                    rtsp_url[--len] = 0;
+                }
+            }
+            _pclose(fp);
+        }
     }
-    _pclose(fp);
-    write_log("Got RTSP URL: %s\n", rtsp_url);
+
+    write_log("Got RTSP URL: %s\n", rtsp_url[0] ? rtsp_url : "<empty>");
     return rtsp_url;
 }
 
@@ -524,12 +549,26 @@ cleanup:
 }
 
 void main_record() {
+
+    // 日志输出级别控制函数
+    // AV_LOG_QUIET        // 完全安静，**不输出任何日志**（正式版用）
+    // AV_LOG_ERROR        // 只显示错误
+    // AV_LOG_WARNING      // 显示警告 + 错误
+    // AV_LOG_INFO         // 显示普通信息（默认）
+    // AV_LOG_DEBUG        // 调试用，超多日志
+    av_log_set_level(AV_LOG_DEBUG);
+
     avformat_network_init();
-    av_log_set_level(AV_LOG_ERROR);
     write_log("Service started\n");
 
     while (1) {
         char* url = get_new_rtsp_url();
+        if (!url || !url[0]) {
+            // write_log("No RTSP URL received, waiting and retrying\n");
+            write_log("未获取到RTSP地址,等待3秒后重试...\n");
+            av_usleep(RECONNECT_DELAY);
+            continue;
+        }
         start_record(url);
         av_usleep(RECONNECT_DELAY);
     }
