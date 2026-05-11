@@ -178,6 +178,7 @@ int start_record(const char* rtsp_url) {
     int64_t start_time = 0;
     double duration = 0;
     char filepath[512];
+    static int64_t first_pts = AV_NOPTS_VALUE;
 
     write_log("开始录制: %s\n", rtsp_url);
 
@@ -224,6 +225,8 @@ int start_record(const char* rtsp_url) {
         ret = av_read_frame(ifmt_ctx, &pkt);
         if (ret < 0) break;
 
+
+
         duration = (av_gettime() - start_time) / 1000000.0;
         if (duration >= SEGMENT_DURATION) {
             write_log("分段: %s\n", filepath);
@@ -246,10 +249,23 @@ int start_record(const char* rtsp_url) {
             avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
             if (avformat_write_header(ofmt_ctx, NULL) < 0) {
                 write_log("写文件头失败\n");
-                return;
+                return -1;
             }
             start_time = av_gettime();
         }
+        // 归一化时间戳（从0开始）
+        if (pkt->pts != AV_NOPTS_VALUE) {
+            if (first_pts == AV_NOPTS_VALUE)
+                first_pts = pkt->pts;
+
+            pkt->pts -= first_pts;
+            pkt->dts -= first_pts;
+        }
+
+        // 转换时间基
+        pkt->pts = av_rescale_q_rnd(pkt->pts, in_stream->time_base, out_stream->time_base, AV_ROUND_NEAR_INF);
+        pkt->dts = av_rescale_q_rnd(pkt->dts, in_stream->time_base, out_stream->time_base, AV_ROUND_NEAR_INF);
+        pkt->duration = av_rescale_q(pkt->duration, in_stream->time_base, out_stream->time_base);
 
         av_interleaved_write_frame(ofmt_ctx, &pkt);
         av_packet_unref(&pkt);
