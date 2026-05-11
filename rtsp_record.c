@@ -166,7 +166,7 @@ void create_filepath(char* path) {
         t->tm_hour,
         t->tm_min,
         t->tm_sec,
-        SEGMENT_DURATION*1000,
+        (int)(SEGMENT_DURATION)*1000,
         OUTPUT_EXTENSION);
     write_log("Created output filepath: %s\n", path);
 }
@@ -207,6 +207,9 @@ int start_record(const char* rtsp_url) {
 
     for (i = 0; i < ifmt_ctx->nb_streams; i++) {
         AVStream* in_stream = ifmt_ctx->streams[i];
+        AVCodecParameters* par = in_stream->codecpar;
+        if (par->codec_type != AVMEDIA_TYPE_VIDEO && par->codec_type != AVMEDIA_TYPE_AUDIO)
+                    continue;
         const AVCodec *codec = avcodec_find_decoder(in_stream->codecpar->codec_id);
         AVStream* out_stream = avformat_new_stream(ofmt_ctx, codec);
         avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
@@ -245,6 +248,10 @@ int start_record(const char* rtsp_url) {
             avformat_alloc_output_context2(&ofmt_ctx, NULL, "mpegts", utf8_filepath);
             for (i = 0; i < ifmt_ctx->nb_streams; i++) {
                 AVStream* in_stream = ifmt_ctx->streams[i];
+                AVCodecParameters *par = in_stream->codecpar;
+                if (par->codec_type != AVMEDIA_TYPE_VIDEO && par->codec_type != AVMEDIA_TYPE_AUDIO)
+                    continue;
+
                 const AVCodec *codec = avcodec_find_decoder(in_stream->codecpar->codec_id);
                 AVStream* out_stream = avformat_new_stream(ofmt_ctx, codec);
                 avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
@@ -261,18 +268,14 @@ int start_record(const char* rtsp_url) {
          AVStream* in_stream = ifmt_ctx->streams[pkt.stream_index];
          AVStream* out_stream = ofmt_ctx->streams[pkt.stream_index];
         // 归一化时间戳（从0开始）
-        if (pkt.pts != AV_NOPTS_VALUE) {
-            if (first_pts == AV_NOPTS_VALUE)
-                first_pts = pkt.pts;
+        if (pkt.pts == AV_NOPTS_VALUE) pkt.pts = 0;
+        if (pkt.dts == AV_NOPTS_VALUE) pkt.dts = 0;
 
-            pkt.pts -= first_pts;
-            pkt.dts -= first_pts;
-        }
-
-        // 转换时间基
-        pkt.pts = av_rescale_q_rnd(pkt.pts, in_stream->time_base, out_stream->time_base, AV_ROUND_NEAR_INF);
-        pkt.dts = av_rescale_q_rnd(pkt.dts, in_stream->time_base, out_stream->time_base, AV_ROUND_NEAR_INF);
+        // 时间基转换
+        pkt.pts = av_rescale_q(pkt.pts, in_stream->time_base, out_stream->time_base);
+        pkt.dts = av_rescale_q(pkt.dts, in_stream->time_base, out_stream->time_base);
         pkt.duration = av_rescale_q(pkt.duration, in_stream->time_base, out_stream->time_base);
+        pkt.pos = -1;
 
         av_interleaved_write_frame(ofmt_ctx, &pkt);
         av_packet_unref(&pkt);
