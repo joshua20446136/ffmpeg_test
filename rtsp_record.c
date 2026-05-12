@@ -187,9 +187,11 @@ int start_record(const char* rtsp_url) {
     av_dict_set(&options, "rtsp_transport", "tcp", 0);
     av_dict_set(&options, "stimeout", "5000000", 0);
     av_dict_set(&options, "reset_timestamps", "1", 0);
-    av_dict_set(&options, "fflags", "genpts+discardcorrupt+nomerge", 0);
-    av_dict_set(&options, "start_time_realtime", "0", 0);
-    av_dict_set(&options, "max_interleave_delta", "15000000", 0);
+
+    av_dict_set(&options, "reset_timestamps", "1", 0);
+    av_dict_set(&options, "fflags", "genpts+discardcorrupt", 0);  // 删掉 nomerge
+    av_dict_set(&options, "max_interleave_delta", "20000000", 0);
+
     av_dict_set(&options, "segment_atclocktime", "1", 0);
     av_dict_set(&options, "segment_time_delta", "0.1", 0);
 
