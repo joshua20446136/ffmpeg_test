@@ -246,6 +246,7 @@ int start_record(const char* rtsp_url) {
             //修复 Duration累加问题，重置时间戳
             AVFormatContext *ofmt_ctx = NULL;  // 每次都新建
             //计算当前分段的实际持续时间，日志输出用
+            AVStream* in_stream = ifmt_ctx->streams[pkt.stream_index];
             write_log("duration : %lld\n", pkt.pts * av_q2d(in_stream->time_base) * 1000);
             // ==============================
             // 把 Duration 写入文件名！！！
@@ -275,7 +276,7 @@ int start_record(const char* rtsp_url) {
                 // 🔥 关键三行，根治 Duration 错误
                 out_stream->start_time = 0;
                 out_stream->duration   = 0;
-                out_stream->cur_dts    = 0;
+        
             }
             avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
             ofmt_ctx->max_delay = 0;
