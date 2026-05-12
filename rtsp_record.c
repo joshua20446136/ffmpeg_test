@@ -236,6 +236,14 @@ int start_record(const char* rtsp_url) {
     avformat_write_header(ofmt_ctx, &out_opts);
     av_dict_free(&out_opts);
 
+    // 每个分段独立记录第一帧时间戳，解决 start 值问题
+    int64_t base_pts[16] = { 0 };
+    int64_t base_dts[16] = { 0 };
+    for (int k = 0; k < 16; k++) {
+        base_pts[k] = AV_NOPTS_VALUE;
+        base_dts[k] = AV_NOPTS_VALUE;
+    }
+
     // ======================== 核心循环 ========================
     while (1) {
         ret = av_read_frame(ifmt_ctx, &pkt);
@@ -293,6 +301,19 @@ int start_record(const char* rtsp_url) {
 
         // 只做时间基转换，不修改任何值！！！
         av_packet_rescale_ts(&pkt, in_stream->time_base, out_stream->time_base);
+        // ===================== 核心：去掉 start 值，每个分段从 0 开始 =====================
+        if (base_pts[pkt.stream_index] == AV_NOPTS_VALUE) {
+            base_pts[pkt.stream_index] = pkt.pts;
+            base_dts[pkt.stream_index] = pkt.dts;
+        }
+
+        // 减去起始值，强制从0开始
+        pkt.pts -= base_pts[pkt.stream_index];
+        pkt.dts -= base_dts[pkt.stream_index];
+
+        if (pkt.pts < 0) pkt.pts = 0;
+        if (pkt.dts < 0) pkt.dts = 0;
+
         pkt.pos = -1;
 
         // 直接写入，不做任何减法、归零、偏移
