@@ -178,22 +178,14 @@ int start_record(const char* rtsp_url) {
     int64_t start_time = 0;
     double duration = 0;
     char filepath[512];
-    int64_t first_pts = AV_NOPTS_VALUE;
-
+    int64_t first_pts = AV_NOPTS_VALUE;  // 每个分段都会重置
 
     write_log("开始录制: %s\n", rtsp_url);
 
+    // 输入参数（RTSP）
     AVDictionary* options = NULL;
     av_dict_set(&options, "rtsp_transport", "tcp", 0);
     av_dict_set(&options, "stimeout", "5000000", 0);
-    av_dict_set(&options, "reset_timestamps", "1", 0);
-
-    av_dict_set(&options, "reset_timestamps", "1", 0);
-    av_dict_set(&options, "fflags", "genpts+discardcorrupt", 0);  // 删掉 nomerge
-    av_dict_set(&options, "max_interleave_delta", "20000000", 0);
-
-    av_dict_set(&options, "segment_atclocktime", "1", 0);
-    av_dict_set(&options, "segment_time_delta", "0.1", 0);
 
     ret = avformat_open_input(&ifmt_ctx, rtsp_url, NULL, &options);
     av_dict_free(&options);
@@ -208,22 +200,26 @@ int start_record(const char* rtsp_url) {
 
     char utf8_filepath[1024] = {0};
     if (win_path_to_utf8(filepath, utf8_filepath, sizeof(utf8_filepath)) < 0) {
-        write_log("Failed to convert output filepath to UTF-8\n");
+        write_log("路径转换失败\n");
         return -1;
     }
 
     avformat_alloc_output_context2(&ofmt_ctx, NULL, "mov", utf8_filepath);
 
+    // 复制流
     for (i = 0; i < ifmt_ctx->nb_streams; i++) {
         AVStream* in_stream = ifmt_ctx->streams[i];
         AVCodecParameters* par = in_stream->codecpar;
         if (par->codec_type != AVMEDIA_TYPE_VIDEO && par->codec_type != AVMEDIA_TYPE_AUDIO)
-                    continue;
-        const AVCodec *codec = avcodec_find_decoder(in_stream->codecpar->codec_id);
+            continue;
+
+        const AVCodec* codec = avcodec_find_decoder(par->codec_id);
         AVStream* out_stream = avformat_new_stream(ofmt_ctx, codec);
-        avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
+        avcodec_parameters_copy(out_stream->codecpar, par);
         out_stream->time_base = in_stream->time_base;
+        out_stream->codecpar->codec_tag = 0;
     }
+
     ofmt_ctx->max_delay = 0;
     ofmt_ctx->flags |= AVFMT_FLAG_FLUSH_PACKETS;
     ofmt_ctx->start_time = AV_NOPTS_VALUE;
@@ -235,103 +231,106 @@ int start_record(const char* rtsp_url) {
         return ret;
     }
 
-    if (avformat_write_header(ofmt_ctx, NULL) < 0) {
-        write_log("写文件头失败\n");
-        return -1;
-    }
+    // 输出必须带修复参数！！！
+    AVDictionary* out_opts = NULL;
+    av_dict_set(&out_opts, "reset_timestamps", "1", 0);
+    av_dict_set(&out_opts, "fflags", "genpts+discardcorrupt", 0);
+    av_dict_set(&out_opts, "max_interleave_delta", "20000000", 0);
+    avformat_write_header(ofmt_ctx, &out_opts);
+    av_dict_free(&out_opts);
 
-    int first_packet = 1;
-    first_packet = 1;
+    first_pts = AV_NOPTS_VALUE;
 
     while (1) {
         ret = av_read_frame(ifmt_ctx, &pkt);
         if (ret < 0) break;
 
-        
-
         duration = (av_gettime() - start_time) / 1000000.0;
+
+        // ==============================
+        // 分段触发
+        // ==============================
         if (duration >= SEGMENT_DURATION) {
-            write_log("分段: %s\n", filepath);
+            write_log("分段完成: %s\n", filepath);
+
+            // 关闭旧文件
             av_write_trailer(ofmt_ctx);
             avio_closep(&ofmt_ctx->pb);
             avformat_free_context(ofmt_ctx);
-            //修复 Duration累加问题，重置时间戳
-            ofmt_ctx = NULL;  // 每次都新建
-            //计算当前分段的实际持续时间，日志输出用
-            AVStream* in_stream = ifmt_ctx->streams[pkt.stream_index];
-            write_log("duration : %lld\n",  (int64_t)(pkt.pts * av_q2d(in_stream->time_base) * 1000));
-            // ==============================
-            // 把 Duration 写入文件名！！！
-            // ==============================
-            // snprintf(outfile, sizeof(outfile), "video_%03d_%.2f.ts", file_idx++, duration);
-            // rename("temp.ts", outfile);  // 重命名
+            ofmt_ctx = NULL;
 
+            // 新建文件
             create_filepath(filepath);
+            win_path_to_utf8(filepath, utf8_filepath, sizeof(utf8_filepath));
 
-            if (win_path_to_utf8(filepath, utf8_filepath, sizeof(utf8_filepath)) < 0) {
-                write_log("Failed to convert output filepath to UTF-8\n");
-                break;
-            }
             avformat_alloc_output_context2(&ofmt_ctx, NULL, "mov", utf8_filepath);
+
+            // 重新创建输出流
             for (i = 0; i < ifmt_ctx->nb_streams; i++) {
                 AVStream* in_stream = ifmt_ctx->streams[i];
-                AVCodecParameters *par = in_stream->codecpar;
+                AVCodecParameters* par = in_stream->codecpar;
                 if (par->codec_type != AVMEDIA_TYPE_VIDEO && par->codec_type != AVMEDIA_TYPE_AUDIO)
                     continue;
 
-                const AVCodec *codec = avcodec_find_decoder(in_stream->codecpar->codec_id);
+                const AVCodec* codec = avcodec_find_decoder(par->codec_id);
                 AVStream* out_stream = avformat_new_stream(ofmt_ctx, codec);
-                avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
+                avcodec_parameters_copy(out_stream->codecpar, par);
                 out_stream->time_base = in_stream->time_base;
-
                 out_stream->codecpar->codec_tag = 0;
-                
-                // 🔥 关键三行，根治 Duration 错误
-                out_stream->start_time = 0;
-                out_stream->duration   = 0;
-                ofmt_ctx->start_time = AV_NOPTS_VALUE;
-                ofmt_ctx->duration = 0;
-
-        
             }
+
             ofmt_ctx->max_delay = 0;
             ofmt_ctx->flags |= AVFMT_FLAG_FLUSH_PACKETS;
+            ofmt_ctx->start_time = AV_NOPTS_VALUE;
+            ofmt_ctx->duration = 0;
+
             avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
 
-            if (avformat_write_header(ofmt_ctx, NULL) < 0) {
-                write_log("写文件头失败\n");
-                break;
-            }
+            // 新分段必须重新带参数！！！
+            AVDictionary* new_out_opts = NULL;
+            av_dict_set(&new_out_opts, "reset_timestamps", "1", 0);
+            av_dict_set(&new_out_opts, "fflags", "genpts+discardcorrupt", 0);
+            av_dict_set(&new_out_opts, "max_interleave_delta", "20000000", 0);
+            avformat_write_header(ofmt_ctx, &new_out_opts);
+            av_dict_free(&new_out_opts);
+
+            // 🔥 关键：新分段必须重置 first_pts
+            first_pts = AV_NOPTS_VALUE;
             start_time = av_gettime();
-            first_packet = 1; // 新段，重置第一帧标记
         }
 
-         AVStream* in_stream = ifmt_ctx->streams[pkt.stream_index];
-         AVStream* out_stream = ofmt_ctx->streams[pkt.stream_index];
-        // 归一化时间戳（从0开始）
-        if (pkt.pts == AV_NOPTS_VALUE) pkt.pts = 0;
-        if (pkt.dts == AV_NOPTS_VALUE) pkt.dts = 0;
+        // ==============================
+        // 时间戳归一化（每个分段从0开始）
+        // ==============================
+        AVStream* in_stream = ifmt_ctx->streams[pkt.stream_index];
+        AVStream* out_stream = ofmt_ctx->streams[pkt.stream_index];
 
-        // 时间基转换
-        pkt.pts = av_rescale_q(pkt.pts, in_stream->time_base, out_stream->time_base);
-        pkt.dts = av_rescale_q(pkt.dts, in_stream->time_base, out_stream->time_base);
+        // 转换时间基
+        int64_t orig_pts = pkt.pts;
+        int64_t orig_dts = pkt.dts;
+
+        pkt.pts = av_rescale_q(orig_pts, in_stream->time_base, out_stream->time_base);
+        pkt.dts = av_rescale_q(orig_dts, in_stream->time_base, out_stream->time_base);
         pkt.duration = av_rescale_q(pkt.duration, in_stream->time_base, out_stream->time_base);
         pkt.pos = -1;
-        if (first_packet) {
-            // 第一帧直接归零！
-            // pkt.pts = 0;
-            // pkt.dts = 0;
-            // pkt.duration = 0;
-            first_packet = 0;
+
+        // 记录每个分段第一帧的 pts，全部减去它 → 从0开始
+        if (first_pts == AV_NOPTS_VALUE) {
             first_pts = pkt.pts;
         }
-        pkt.pts = pkt.pts - first_pts;
-        pkt.dts = pkt.dts - first_pts;
+
+        pkt.pts -= first_pts;
+        pkt.dts -= first_pts;
+
+        // 防止负时间戳
+        if (pkt.pts < 0) pkt.pts = 0;
+        if (pkt.dts < 0) pkt.dts = 0;
 
         av_interleaved_write_frame(ofmt_ctx, &pkt);
         av_packet_unref(&pkt);
     }
 
+    // 收尾
     av_write_trailer(ofmt_ctx);
     avio_closep(&ofmt_ctx->pb);
     avformat_free_context(ofmt_ctx);
