@@ -178,7 +178,7 @@ int start_record(const char* rtsp_url) {
     int64_t start_time = 0;
     double duration = 0;
     char filepath[512];
-    static int64_t first_pts = AV_NOPTS_VALUE;
+    int64_t first_pts = AV_NOPTS_VALUE;
 
 
     write_log("开始录制: %s\n", rtsp_url);
@@ -216,7 +216,8 @@ int start_record(const char* rtsp_url) {
         avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
         out_stream->time_base = in_stream->time_base;
     }
-
+    ofmt_ctx->max_delay = 0;
+    ofmt_ctx->flags |= AVFMT_FLAG_FLUSH_PACKETS;
     ret = avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
     if (ret < 0) {
         write_log("打开输出文件失败\n");
@@ -228,14 +229,14 @@ int start_record(const char* rtsp_url) {
         return -1;
     }
 
-    static int first_packet = 1;
+    int first_packet = 1;
     first_packet = 1;
 
     while (1) {
         ret = av_read_frame(ifmt_ctx, &pkt);
         if (ret < 0) break;
 
-
+        write_log("first pts = %lld\n", pkt.pts);
 
         duration = (av_gettime() - start_time) / 1000000.0;
         if (duration >= SEGMENT_DURATION) {
@@ -244,7 +245,7 @@ int start_record(const char* rtsp_url) {
             avio_closep(&ofmt_ctx->pb);
             avformat_free_context(ofmt_ctx);
             //修复 Duration累加问题，重置时间戳
-            AVFormatContext *ofmt_ctx = NULL;  // 每次都新建
+            ofmt_ctx = NULL;  // 每次都新建
             //计算当前分段的实际持续时间，日志输出用
             AVStream* in_stream = ifmt_ctx->streams[pkt.stream_index];
             write_log("duration : %lld\n",  (int64_t)(pkt.pts * av_q2d(in_stream->time_base) * 1000));
@@ -273,13 +274,16 @@ int start_record(const char* rtsp_url) {
                 out_stream->time_base = in_stream->time_base;
 
                 out_stream->codecpar->codec_tag = 0;
+                
                 // 🔥 关键三行，根治 Duration 错误
                 out_stream->start_time = 0;
                 out_stream->duration   = 0;
         
             }
-            avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
             ofmt_ctx->max_delay = 0;
+            ofmt_ctx->flags |= AVFMT_FLAG_FLUSH_PACKETS;
+            avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
+
             if (avformat_write_header(ofmt_ctx, NULL) < 0) {
                 write_log("写文件头失败\n");
                 break;
