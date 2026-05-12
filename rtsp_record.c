@@ -166,7 +166,7 @@ void create_filepath(char* path) {
         t->tm_hour,
         t->tm_min,
         t->tm_sec,
-        (int)(SEGMENT_DURATION)*1000,
+        00000,
         OUTPUT_EXTENSION);
     write_log("Created output filepath: %s\n", path);
 }
@@ -246,7 +246,12 @@ int start_record(const char* rtsp_url) {
             //修复 Duration累加问题，重置时间戳
             ofmt_ctx = NULL;
             //计算当前分段的实际持续时间，日志输出用
-            write_log("duration : %lld\n", pkt.pts * av_q2d(tb) * 1000);
+            write_log("duration : %lld\n", pkt.pts * av_q2d(in_stream->time_base) * 1000);
+            // ==============================
+            // 把 Duration 写入文件名！！！
+            // ==============================
+            // snprintf(outfile, sizeof(outfile), "video_%03d_%.2f.ts", file_idx++, duration);
+            // rename("temp.ts", outfile);  // 重命名
 
             create_filepath(filepath);
 
