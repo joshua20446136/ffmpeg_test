@@ -293,6 +293,12 @@ int start_record(const char* rtsp_url) {
             av_dict_free(&new_out_opts);
 
             start_time = av_gettime();
+
+
+            for (int k = 0; k < 16; k++) {
+                base_pts[k] = AV_NOPTS_VALUE;
+                base_dts[k] = AV_NOPTS_VALUE;
+            }
         }
 
      
