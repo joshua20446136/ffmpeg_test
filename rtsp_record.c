@@ -178,11 +178,10 @@ int start_record(const char* rtsp_url) {
     int64_t start_time = 0;
     double duration = 0;
     char filepath[512];
-    int64_t first_pts = AV_NOPTS_VALUE;  // 每个分段都会重置
+    int64_t first_pts = AV_NOPTS_VALUE;
 
     write_log("开始录制: %s\n", rtsp_url);
 
-    // 输入参数（RTSP）
     AVDictionary* options = NULL;
     av_dict_set(&options, "rtsp_transport", "tcp", 0);
     av_dict_set(&options, "stimeout", "5000000", 0);
@@ -206,7 +205,6 @@ int start_record(const char* rtsp_url) {
 
     avformat_alloc_output_context2(&ofmt_ctx, NULL, "mov", utf8_filepath);
 
-    // 复制流
     for (i = 0; i < ifmt_ctx->nb_streams; i++) {
         AVStream* in_stream = ifmt_ctx->streams[i];
         AVCodecParameters* par = in_stream->codecpar;
@@ -231,7 +229,6 @@ int start_record(const char* rtsp_url) {
         return ret;
     }
 
-    // 输出必须带修复参数！！！
     AVDictionary* out_opts = NULL;
     av_dict_set(&out_opts, "reset_timestamps", "1", 0);
     av_dict_set(&out_opts, "fflags", "genpts+discardcorrupt", 0);
@@ -247,28 +244,19 @@ int start_record(const char* rtsp_url) {
 
         duration = (av_gettime() - start_time) / 1000000.0;
 
-        // ==============================
-        // 分段触发
-        // ==============================
         if (duration >= SEGMENT_DURATION) {
             write_log("分段完成: %s\n", filepath);
 
-            // 关闭旧文件
             av_write_trailer(ofmt_ctx);
             avio_closep(&ofmt_ctx->pb);
             avformat_free_context(ofmt_ctx);
             ofmt_ctx = NULL;
-            //计算当前分段的实际持续时间，日志输出用
-            AVStream* in_stream = ifmt_ctx->streams[pkt.stream_index];
-            write_log("duration : %lld\n",  (int64_t)(pkt.pts * av_q2d(in_stream->time_base) * 1000));
-           
-            // 新建文件
+
             create_filepath(filepath);
             win_path_to_utf8(filepath, utf8_filepath, sizeof(utf8_filepath));
 
             avformat_alloc_output_context2(&ofmt_ctx, NULL, "mov", utf8_filepath);
 
-            // 重新创建输出流
             for (i = 0; i < ifmt_ctx->nb_streams; i++) {
                 AVStream* in_stream = ifmt_ctx->streams[i];
                 AVCodecParameters* par = in_stream->codecpar;
@@ -289,7 +277,6 @@ int start_record(const char* rtsp_url) {
 
             avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
 
-            // 新分段必须重新带参数！！！
             AVDictionary* new_out_opts = NULL;
             av_dict_set(&new_out_opts, "reset_timestamps", "1", 0);
             av_dict_set(&new_out_opts, "fflags", "genpts+discardcorrupt", 0);
@@ -297,27 +284,28 @@ int start_record(const char* rtsp_url) {
             avformat_write_header(ofmt_ctx, &new_out_opts);
             av_dict_free(&new_out_opts);
 
-            // 🔥 关键：新分段必须重置 first_pts
             first_pts = AV_NOPTS_VALUE;
             start_time = av_gettime();
         }
 
-        // ==============================
-        // 时间戳归一化（每个分段从0开始）
-        // ==============================
         AVStream* in_stream = ifmt_ctx->streams[pkt.stream_index];
         AVStream* out_stream = ofmt_ctx->streams[pkt.stream_index];
 
-        // 转换时间基
-        int64_t orig_pts = pkt.pts;
-        int64_t orig_dts = pkt.dts;
+        // ==============================
+        // 🔥 修复 DTS 无穷大错误（核心）
+        // ==============================
+        if (pkt.pts == AV_NOPTS_VALUE) pkt.pts = pkt.dts;
+        if (pkt.dts == AV_NOPTS_VALUE) pkt.dts = pkt.pts;
+        if (pkt.pts == AV_NOPTS_VALUE) pkt.pts = 0;
+        if (pkt.dts == AV_NOPTS_VALUE) pkt.dts = 0;
 
-        pkt.pts = av_rescale_q(orig_pts, in_stream->time_base, out_stream->time_base);
-        pkt.dts = av_rescale_q(orig_dts, in_stream->time_base, out_stream->time_base);
+        // 时间基转换
+        pkt.pts = av_rescale_q(pkt.pts, in_stream->time_base, out_stream->time_base);
+        pkt.dts = av_rescale_q(pkt.dts, in_stream->time_base, out_stream->time_base);
         pkt.duration = av_rescale_q(pkt.duration, in_stream->time_base, out_stream->time_base);
         pkt.pos = -1;
 
-        // 记录每个分段第一帧的 pts，全部减去它 → 从0开始
+        // 每个分段从 0 开始
         if (first_pts == AV_NOPTS_VALUE) {
             first_pts = pkt.pts;
         }
@@ -325,15 +313,22 @@ int start_record(const char* rtsp_url) {
         pkt.pts -= first_pts;
         pkt.dts -= first_pts;
 
-        // 防止负时间戳
+        // 防止负数
         if (pkt.pts < 0) pkt.pts = 0;
         if (pkt.dts < 0) pkt.dts = 0;
+
+        // 防止重复 DTS
+        static int64_t last_dts = -1;
+        if (pkt.dts <= last_dts) {
+            pkt.dts = last_dts + 1;
+            pkt.pts = pkt.dts;
+        }
+        last_dts = pkt.dts;
 
         av_interleaved_write_frame(ofmt_ctx, &pkt);
         av_packet_unref(&pkt);
     }
 
-    // 收尾
     av_write_trailer(ofmt_ctx);
     avio_closep(&ofmt_ctx->pb);
     avformat_free_context(ofmt_ctx);
@@ -341,7 +336,6 @@ int start_record(const char* rtsp_url) {
     write_log("录制停止\n");
     return 0;
 }
-
 void main_record() {
 
     // 日志输出级别控制函数
