@@ -258,7 +258,10 @@ int start_record(const char* rtsp_url) {
             avio_closep(&ofmt_ctx->pb);
             avformat_free_context(ofmt_ctx);
             ofmt_ctx = NULL;
-
+            //计算当前分段的实际持续时间，日志输出用
+            AVStream* in_stream = ifmt_ctx->streams[pkt.stream_index];
+            write_log("duration : %lld\n",  (int64_t)(pkt.pts * av_q2d(in_stream->time_base) * 1000));
+           
             // 新建文件
             create_filepath(filepath);
             win_path_to_utf8(filepath, utf8_filepath, sizeof(utf8_filepath));
