@@ -247,7 +247,7 @@ int start_record(const char* rtsp_url) {
             AVFormatContext *ofmt_ctx = NULL;  // 每次都新建
             //计算当前分段的实际持续时间，日志输出用
             AVStream* in_stream = ifmt_ctx->streams[pkt.stream_index];
-            write_log("duration : %lld\n", pkt.pts * av_q2d(in_stream->time_base) * 1000);
+            write_log("duration : %lld\n",  (int64_t)(pkt.pts * av_q2d(in_stream->time_base) * 1000));
             // ==============================
             // 把 Duration 写入文件名！！！
             // ==============================
