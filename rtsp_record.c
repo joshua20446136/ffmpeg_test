@@ -295,6 +295,18 @@ int start_record(const char* rtsp_url) {
             start_time = av_gettime();
         }
 
+                // ===================== 调试输出：所有关键时间 =====================
+        AVStream* out_stream = ofmt_ctx->streams[pkt.stream_index];
+        write_log("[调试] ====== 时间信息 ======");
+        write_log("[调试] ofmt_ctx->start_time = %lld", ofmt_ctx->start_time);
+        write_log("[调试] ofmt_ctx->duration   = %lld", ofmt_ctx->duration);
+        write_log("[调试] stream_index        = %d", pkt.stream_index);
+        write_log("[调试] out_stream->start_time = %lld", out_stream->start_time);
+        write_log("[调试] out_stream->duration   = %lld", out_stream->duration);
+        write_log("[调试] pkt.pts = %lld | pkt.dts = %lld", pkt.pts, pkt.dts);
+        write_log("[调试] ======================\n");
+        // ===================================================================
+
         // ======================== 【关键】完全不手动改PTS/DTS！ ========================
         AVStream* in_stream = ifmt_ctx->streams[pkt.stream_index];
         AVStream* out_stream = ofmt_ctx->streams[pkt.stream_index];
