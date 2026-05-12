@@ -330,7 +330,7 @@ void main_record() {
     // AV_LOG_WARNING      // 显示警告 + 错误
     // AV_LOG_INFO         // 显示普通信息（默认）
     // AV_LOG_DEBUG        // 调试用，超多日志
-    av_log_set_level(AV_LOG_ERROR);
+    av_log_set_level(AV_LOG_DEBUG);
 
     avformat_network_init();
     write_log("Service started\n");
