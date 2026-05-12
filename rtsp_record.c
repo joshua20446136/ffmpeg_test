@@ -180,6 +180,7 @@ int start_record(const char* rtsp_url) {
     char filepath[512];
     static int64_t first_pts = AV_NOPTS_VALUE;
 
+
     write_log("开始录制: %s\n", rtsp_url);
 
     AVDictionary* options = NULL;
@@ -221,6 +222,7 @@ int start_record(const char* rtsp_url) {
         write_log("打开输出文件失败\n");
         return ret;
     }
+    ofmt_ctx->max_delay = 0;
     if (avformat_write_header(ofmt_ctx, NULL) < 0) {
         write_log("写文件头失败\n");
         return -1;
@@ -241,12 +243,14 @@ int start_record(const char* rtsp_url) {
             av_write_trailer(ofmt_ctx);
             avio_closep(&ofmt_ctx->pb);
             avformat_free_context(ofmt_ctx);
+            //修复 Duration累加问题，重置时间戳
+            ofmt_ctx = NULL;
 
             create_filepath(filepath);
 
             if (win_path_to_utf8(filepath, utf8_filepath, sizeof(utf8_filepath)) < 0) {
                 write_log("Failed to convert output filepath to UTF-8\n");
-                return -1;
+                break;
             }
             avformat_alloc_output_context2(&ofmt_ctx, NULL, "mov", utf8_filepath);
             for (i = 0; i < ifmt_ctx->nb_streams; i++) {
@@ -261,9 +265,10 @@ int start_record(const char* rtsp_url) {
                 out_stream->time_base = in_stream->time_base;
             }
             avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
+            ofmt_ctx->max_delay = 0;
             if (avformat_write_header(ofmt_ctx, NULL) < 0) {
                 write_log("写文件头失败\n");
-                return -1;
+                break;
             }
             start_time = av_gettime();
             first_packet = 1; // 新段，重置第一帧标记
@@ -282,10 +287,14 @@ int start_record(const char* rtsp_url) {
         pkt.pos = -1;
         if (first_packet) {
             // 第一帧直接归零！
-            pkt.pts = 0;
-            pkt.dts = 0;
+            // pkt.pts = 0;
+            // pkt.dts = 0;
+            // pkt.duration = 0;
             first_packet = 0;
+            first_pts = pkt.pts;
         }
+        pkt.pts = pkt.pts - first_pts;
+        pkt.dts = pkt.dts - first_pts;
 
         av_interleaved_write_frame(ofmt_ctx, &pkt);
         av_packet_unref(&pkt);
