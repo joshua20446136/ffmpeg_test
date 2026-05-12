@@ -245,6 +245,8 @@ int start_record(const char* rtsp_url) {
             avformat_free_context(ofmt_ctx);
             //修复 Duration累加问题，重置时间戳
             ofmt_ctx = NULL;
+            //计算当前分段的实际持续时间，日志输出用
+            write_log("duration : %lld\n", pkt.pts * av_q2d(tb) * 1000);
 
             create_filepath(filepath);
 
