@@ -166,7 +166,7 @@ void create_filepath(char* path) {
         t->tm_hour,
         t->tm_min,
         t->tm_sec,
-        00000,
+        60000,
         OUTPUT_EXTENSION);
     write_log("Created output filepath: %s\n", path);
 }
@@ -186,6 +186,12 @@ int start_record(const char* rtsp_url) {
     AVDictionary* options = NULL;
     av_dict_set(&options, "rtsp_transport", "tcp", 0);
     av_dict_set(&options, "stimeout", "5000000", 0);
+    av_dict_set(&options, "reset_timestamps", "1", 0);
+    av_dict_set(&options, "fflags", "genpts+discardcorrupt+nomerge", 0);
+    av_dict_set(&options, "start_time_realtime", "0", 0);
+    av_dict_set(&options, "max_interleave_delta", "15000000", 0);
+    av_dict_set(&options, "segment_atclocktime", "1", 0);
+    av_dict_set(&options, "segment_time_delta", "0.1", 0);
 
     ret = avformat_open_input(&ifmt_ctx, rtsp_url, NULL, &options);
     av_dict_free(&options);
@@ -218,12 +224,15 @@ int start_record(const char* rtsp_url) {
     }
     ofmt_ctx->max_delay = 0;
     ofmt_ctx->flags |= AVFMT_FLAG_FLUSH_PACKETS;
+    ofmt_ctx->start_time = AV_NOPTS_VALUE;
+    ofmt_ctx->duration = 0;
+
     ret = avio_open(&ofmt_ctx->pb, utf8_filepath, AVIO_FLAG_WRITE);
     if (ret < 0) {
         write_log("打开输出文件失败\n");
         return ret;
     }
-    ofmt_ctx->max_delay = 0;
+
     if (avformat_write_header(ofmt_ctx, NULL) < 0) {
         write_log("写文件头失败\n");
         return -1;
@@ -236,7 +245,7 @@ int start_record(const char* rtsp_url) {
         ret = av_read_frame(ifmt_ctx, &pkt);
         if (ret < 0) break;
 
-        write_log("first pts = %lld\n", pkt.pts);
+        
 
         duration = (av_gettime() - start_time) / 1000000.0;
         if (duration >= SEGMENT_DURATION) {
@@ -278,6 +287,9 @@ int start_record(const char* rtsp_url) {
                 // 🔥 关键三行，根治 Duration 错误
                 out_stream->start_time = 0;
                 out_stream->duration   = 0;
+                ofmt_ctx->start_time = AV_NOPTS_VALUE;
+                ofmt_ctx->duration = 0;
+
         
             }
             ofmt_ctx->max_delay = 0;
