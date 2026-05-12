@@ -301,17 +301,6 @@ int start_record(const char* rtsp_url) {
         AVStream* in_stream = ifmt_ctx->streams[pkt.stream_index];
         AVStream* out_stream = ofmt_ctx->streams[pkt.stream_index];
 
-                   // ===================== 调试输出：所有关键时间 =====================
-        
-        write_log("[调试] ====== 时间信息 ======");
-        write_log("[调试] ofmt_ctx->start_time = %lld", ofmt_ctx->start_time);
-        write_log("[调试] ofmt_ctx->duration   = %lld", ofmt_ctx->duration);
-        write_log("[调试] stream_index        = %d", pkt.stream_index);
-        write_log("[调试] out_stream->start_time = %lld", out_stream->start_time);
-        write_log("[调试] out_stream->duration   = %lld", out_stream->duration);
-        write_log("[调试] pkt.pts = %lld | pkt.dts = %lld", pkt.pts, pkt.dts);
-        write_log("[调试] ======================\n");
-        // ===================================================================
 
         // 只做时间基转换，不修改任何值！！！
         av_packet_rescale_ts(&pkt, in_stream->time_base, out_stream->time_base);
@@ -329,6 +318,20 @@ int start_record(const char* rtsp_url) {
         if (pkt.dts < 0) pkt.dts = 0;
 
         pkt.pos = -1;
+
+
+        // ===================== 调试输出：所有关键时间 =====================
+        
+        write_log("[调试] ====== 时间信息 ======");
+        write_log("[调试] ofmt_ctx->start_time = %lld\n", ofmt_ctx->start_time);
+        write_log("[调试] ofmt_ctx->duration   = %lld\n", ofmt_ctx->duration);
+        write_log("[调试] stream_index        = %d\n", pkt.stream_index);
+        write_log("[调试] out_stream->start_time = %lld\n", out_stream->start_time);
+        write_log("[调试] out_stream->duration   = %lld\n", out_stream->duration);
+        write_log("[调试] pkt.pts = %lld | pkt.dts = %lld\n", pkt.pts, pkt.dts);
+        write_log("[调试] ======================\n");
+        // ===================================================================
+
 
         // 直接写入，不做任何减法、归零、偏移
         av_interleaved_write_frame(ofmt_ctx, &pkt);
