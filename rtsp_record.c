@@ -322,7 +322,7 @@ int start_record(const char* rtsp_url) {
 
         // ===================== 调试输出：所有关键时间 =====================
         
-        write_log("[调试] ====== 时间信息 ======");
+        write_log("[调试] ====== 时间信息 ======\n");
         write_log("[调试] ofmt_ctx->start_time = %lld\n", ofmt_ctx->start_time);
         write_log("[调试] ofmt_ctx->duration   = %lld\n", ofmt_ctx->duration);
         write_log("[调试] stream_index        = %d\n", pkt.stream_index);
