@@ -247,7 +247,13 @@ int start_record(const char* rtsp_url) {
     // ======================== 核心循环 ========================
     while (1) {
         ret = av_read_frame(ifmt_ctx, &pkt);
-        if (ret < 0) break;
+        if (ret < 0){
+            char err_buf[1024];
+            // 把错误码转成文字
+            av_strerror(ret, err_buf, sizeof(err_buf));
+            printf("av_read_frame failed: %s, error code: %d\n", err_buf, ret);
+            break;
+        }
 
         duration = (av_gettime() - start_time) / 1000000.0;
 
