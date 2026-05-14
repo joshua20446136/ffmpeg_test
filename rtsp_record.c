@@ -394,9 +394,6 @@ void main_record() {
 void signal_handler(int sig) {
     printf("\nReceived exit signal, shutting down safely...\n");
    
-
-    sleep(1);
-
     if (ofmt_ctx != NULL) {
         av_write_trailer(ofmt_ctx);
         printf("Trailer written successfully, file is complete!\n");
