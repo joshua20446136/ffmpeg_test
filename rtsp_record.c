@@ -31,6 +31,8 @@ char g_base_dir[MAX_PATH] = {0};
 char g_log_file[MAX_PATH] = {0};
 char g_python_script[MAX_PATH] = {0};
 
+static AVFormatContext *ifmt_ctx = NULL, *ofmt_ctx = NULL;
+
 FILE* log_fp = NULL;
 SERVICE_STATUS g_ServiceStatus;
 SERVICE_STATUS_HANDLE g_ServiceStatusHandle;
@@ -172,7 +174,7 @@ void create_filepath(char* path) {
 }
 
 int start_record(const char* rtsp_url) {
-    AVFormatContext *ifmt_ctx = NULL, *ofmt_ctx = NULL;
+    //AVFormatContext *ifmt_ctx = NULL, *ofmt_ctx = NULL;
     AVPacket pkt;
     int ret, i;
     int64_t start_time = 0;
@@ -385,6 +387,35 @@ void main_record() {
     }
 
     avformat_network_deinit();
+}
+
+// 信号处理：Ctrl+C / 终止信号
+void signal_handler(int sig) {
+    printf("\nReceived exit signal, shutting down safely...\n");
+    g_exit = 1;
+
+    sleep(1);
+
+    if (ofmt_ctx != NULL) {
+        av_write_trailer(ofmt_ctx);
+        printf("Trailer written successfully, file is complete!\n");
+    }
+
+    avio_closep(&ofmt_ctx->pb);
+    if (ifmt_ctx) avformat_close_input(&ifmt_ctx);
+    if (ofmt_ctx) avformat_free_context(ofmt_ctx);
+    avformat_network_deinit();
+
+    printf("Program exited safely\n");
+    exit(0);
+}
+
+// 注册所有退出信号
+void register_signal() {
+    signal(SIGINT,  signal_handler);   // Ctrl+C
+    signal(SIGTERM, signal_handler);   // kill
+    signal(SIGABRT, signal_handler);   // 异常
+    signal(SIGSEGV, signal_handler);   // 段错误
 }
 
 void WINAPI ServiceMain(DWORD argc, LPSTR* argv);
