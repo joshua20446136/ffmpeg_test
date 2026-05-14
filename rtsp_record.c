@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <winsvc.h>
 #include <stdarg.h>
+#include <signal.h>
 
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
