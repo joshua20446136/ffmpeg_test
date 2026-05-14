@@ -393,7 +393,7 @@ void main_record() {
 // 信号处理：Ctrl+C / 终止信号
 void signal_handler(int sig) {
     printf("\nReceived exit signal, shutting down safely...\n");
-    g_exit = 1;
+   
 
     sleep(1);
 
