@@ -204,7 +204,7 @@ int start_record(const char* rtsp_url) {
     write_log("开始录制: %s\n", rtsp_url);
 
     TimeoutContext timeout_ctx = { av_gettime_relative() / 1000, 5000 };
-
+    ifmt_ctx = avformat_alloc_context();
     ifmt_ctx->interrupt_callback.callback = interrupt_callback;
     ifmt_ctx->interrupt_callback.opaque = &timeout_ctx;
 
