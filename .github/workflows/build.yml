@@ -66,4 +66,4 @@ jobs:
           name: rtsp_record_windows
           path: |
             rtsp_record.exe
-         #   *.dll
+            *.dll
