@@ -38,6 +38,24 @@ FILE* log_fp = NULL;
 SERVICE_STATUS g_ServiceStatus;
 SERVICE_STATUS_HANDLE g_ServiceStatusHandle;
 
+// 超时上下文   处理 Error number -10054 occurred
+typedef struct {
+    int64_t last_activity_time; // 最后一次成功读到数据的时间（微秒）
+    int timeout_ms;             // 超时阈值，例如 5000 毫秒
+} TimeoutContext;
+
+// 中断回调函数
+static int interrupt_callback(void *opaque) {
+    TimeoutContext *ctx = (TimeoutContext *)opaque;
+    int64_t now = av_gettime_relative() / 1000; // 毫秒级单调时钟
+    
+    // 如果距离上次活动超过阈值，返回 1 触发中断
+    if (now - ctx->last_activity_time > ctx->timeout_ms) {
+        return 1; 
+    }
+    return 0;
+}
+
 void write_log(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -185,6 +203,11 @@ int start_record(const char* rtsp_url) {
 
     write_log("开始录制: %s\n", rtsp_url);
 
+    TimeoutContext timeout_ctx = { av_gettime_relative() / 1000, 5000 };
+
+    ifmt_ctx->interrupt_callback.callback = interrupt_callback;
+    ifmt_ctx->interrupt_callback.opaque = &timeout_ctx;
+
     // ------------- 输入参数（正确）-------------
     AVDictionary* options = NULL;
     av_dict_set(&options, "rtsp_transport", "tcp", 0);
@@ -251,12 +274,21 @@ int start_record(const char* rtsp_url) {
     while (1) {
         ret = av_read_frame(ifmt_ctx, &pkt);
         if (ret < 0){
+            // 检查是否是超时中断
+            if (ret == AVERROR_EXIT) {
+                fprintf(stderr, "读取超时或连接断开，准备重连...\n");
+                break; // 跳出循环，执行重连逻辑
+            }
+
             char err_buf[1024];
             // 把错误码转成文字
             av_strerror(ret, err_buf, sizeof(err_buf));
             printf("av_read_frame failed: %s, error code: %d\n", err_buf, ret);
             break;
         }
+
+        // 成功读到数据包，刷新最后活动时间
+        timeout_ctx.last_activity_time = av_gettime_relative() / 1000;
 
         duration = (av_gettime() - start_time) / 1000000.0;
 
